@@ -5234,6 +5234,7 @@ static void test_lc_time_sz()
 #ifdef __WIN__
 int win_main(int argc, char **argv)
 #else
+extern "C" void edgeless_init_thr_alarm();
 int mysqld_main(int argc, char **argv)
 #endif
 {
@@ -5478,7 +5479,6 @@ int mysqld_main(int argc, char **argv)
   if (init_server_components())
     unireg_abort(1);
 
-  init_ssl();
   network_init();
 
 #ifdef _WIN32
@@ -5505,14 +5505,25 @@ int mysqld_main(int argc, char **argv)
     init signals & alarm
     After this we can't quit by a simple unireg_abort
   */
-  start_signal_handler();				// Creates pidfile
+  (void)start_signal_handler; // EDG: signals not supported
+  edgeless_init_thr_alarm();
 
-  if (mysql_rm_tmp_tables() || acl_init(opt_noacl) ||
+  if (mysql_rm_tmp_tables() || acl_init(true) ||
       my_tz_init((THD *)0, default_tz_name, opt_bootstrap))
     unireg_abort(1);
 
+  init_ssl();
+
   if (!opt_noacl)
+  {
+    // EDG: do what acl_init(false) would have done
+    THD thd(0);
+    thd.thread_stack= reinterpret_cast<char*>(&thd);
+    thd.store_globals();
+    acl_reload(&thd);
+
     (void) grant_init();
+  }
 
   udf_init();
 
@@ -5568,6 +5579,11 @@ int mysqld_main(int argc, char **argv)
   if (opt_bootstrap)
   {
     select_thread_in_use= 0;                    // Allow 'kill' to work
+
+    // EDG: bootstrap from file instead of stdin
+    if (opt_init_file)
+      return read_init_file(opt_init_file) ? EXIT_FAILURE : EXIT_SUCCESS;
+
     int bootstrap_error= bootstrap(mysql_stdin);
     if (!abort_loop)
       unireg_abort(bootstrap_error);

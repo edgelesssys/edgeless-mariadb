@@ -120,6 +120,11 @@ void init_thr_alarm(uint max_alarms)
   DBUG_VOID_RETURN;
 }
 
+void edgeless_init_thr_alarm(void)
+{
+  mysql_mutex_init(key_LOCK_alarm, &LOCK_alarm, MY_MUTEX_INIT_FAST);
+}
+
 
 void resize_thr_alarm(uint max_alarms)
 {

@@ -128,7 +128,10 @@ C_MODE_START
 */
 static inline ulonglong my_timer_cycles(void)
 {
-# if __has_builtin(__builtin_readcyclecounter) && !defined (__aarch64__)
+  // EDG: RDTSC is not supported on SGX1. So we fall back to the next timer here.
+#if 1
+  return 0;
+#elif 0
   return __builtin_readcyclecounter();
 # elif defined _WIN32 || defined __i386__ || defined __x86_64__
   return __rdtsc();

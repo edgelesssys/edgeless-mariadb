@@ -1,4 +1,5 @@
 /* Copyright (c) 2000, 2011, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -144,7 +145,10 @@ void my_error_unregister_all(void);
 #endif
 #endif
 
-#ifdef O_PATH
+// EDG: openat not supported, always use NOAT variant
+#if 1
+#define NOSYMLINK_FUNCTION_BODY(AT,NOAT) return NOAT;
+#elif 0
 #define HAVE_OPEN_PARENT_DIR_NOSYMLINKS
 const char *my_open_parent_dir_nosymlinks(const char *pathname, int *pdfd);
 #define NOSYMLINK_FUNCTION_BODY(AT,NOAT)                                \

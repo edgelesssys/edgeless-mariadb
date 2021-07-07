@@ -11838,7 +11838,7 @@ int ha_rocksdb::rename_table(const char *const from, const char *const to) {
 
   // If the user changed the database part of the name then validate that the
   // 'to' database exists.
-  if (from_db != to_db && !rdb_database_exists(to_db)) {
+  if (from_db != to_db && !myrocks::rocksdb_db_exists(to_db.c_str())) {
     // If we return a RocksDB specific error code here we get
     // "error: 206 - Unknown error 206".  InnoDB gets
     // "error -1 - Unknown error -1" so let's match them.
@@ -14021,6 +14021,156 @@ std::vector<std::string> rocksdb_frm_discover(const char *frm_path) {
       const size_t base_idx = key.rfind(FN_LIBCHAR);
       assert(0 < base_idx && base_idx < ext_idx && ext_idx < key.size());
       result.push_back(key.substr(base_idx + 1, ext_idx - base_idx - 1));
+    }
+  }
+  return result;
+}
+
+
+/*
+ * EDB: Helper functions to store/manage database opt files in rocksdb instead of filesystem.
+ *
+ */
+
+const std::string EDG_DB_CF_NAME("edg_db_cf");
+
+/**
+ * EDB: Checks if a database exists in rocksdb
+ *
+ * @details Checks if a database as .opt file exists in rocksdb
+ *
+ * @param opt_path  Path of the opt file. Used as key in rocksdb.
+ *
+ * @return
+    TRUE  A database exists with specified  name.
+    FALSE  The database does not exist.
+*/
+bool rocksdb_db_exists(const char *opt_path) {
+  DBUG_PRINT("rocksdb_db_exists",("path: %s", opt_path));
+  if (!rdb) {
+    return false;
+  }
+  const auto cf_handle = cf_manager.get_or_create_cf(rdb, EDG_DB_CF_NAME);
+  std::string value;
+  const auto status = rdb->Get({}, cf_handle, opt_path, &value);
+  if (!status.ok()) {
+    DBUG_PRINT("rocksdb::DB->Get", ("status: %s", status.ToString()));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * EDB: Store database in rocksdb
+ *
+ * @details Store database as .opt file in rocksdb
+ *
+ * @param opt_path  Path of the opt file. Used as key in rocksdb.
+ * @param opt     opt image.
+ * @param len      Size of opt image.
+*/
+bool rocksdb_db_write_opt(const char *opt_path, const char *opt, size_t len) {
+  DBUG_PRINT("rocksdb_db_write_opts",("path: %s", opt_path));
+  if (!rdb) {
+     return true;
+  }
+  const auto cf_handle = cf_manager.get_or_create_cf(rdb, EDG_DB_CF_NAME);
+  const auto status = rdb->Put({}, cf_handle, opt_path, {reinterpret_cast<const char*>(opt), len});
+  if (!status.ok()) {
+    DBUG_PRINT("rocksdb::DB->Put", ("status: %s", status.ToString()));
+    return true;
+  }
+  return false;
+}
+
+
+/**
+ * EDB: Read database opt file from rocksdb
+ *
+ * @details Read database opt file from rocksdb
+ *
+ * @param opt_path  Path of the opt file. Used as key in rocksdb.
+ * @param opt     Pointer to return opt image.
+ * @param len      Pointer to return size of opt image.
+*/
+bool rocksdb_db_read_opt(const char *opt_path, char **opt, size_t *len) {
+  DBUG_PRINT("rocksdb_db_read_opt",("path: %s", opt_path));
+  if (!rdb) {
+     return true;
+  }
+  const auto cf_handle = cf_manager.get_or_create_cf(rdb, EDG_DB_CF_NAME);
+  std::string value;
+  const auto status = rdb->Get({}, cf_handle, opt_path, &value);
+  if (!status.ok()) {
+    DBUG_PRINT("rocksdb::DB->Get", ("status: %s", status.ToString()));
+    return true;
+  }
+
+  /* rocksdb_db_read_opt is called before mysqld is done initializing, hence, we can't use MY_THREAD_SPECIFIC */
+  const auto buf= static_cast<char*>(my_malloc(PSI_INSTRUMENT_ME, value.size()+1, MYF(MY_WME)));
+  if (!buf) {
+    return true;
+  }
+
+  memcpy(buf, value.c_str(), value.size());
+  buf[value.size()]= 0;
+  *opt= buf;
+  *len= value.size();
+  return false;
+}
+
+/**
+ * EDB: Delete database as .opt file from rocksdb
+ *
+ * @details Delete database opt file from rocksdb
+ *
+ * @param opt_path  opt file path. Used as key in rocksdb.
+*/
+bool rocksdb_db_delete(const char *opt_path) {
+  DBUG_PRINT("rocksdb_db_delete",("path: %s", opt_path));
+  if (!rdb) {
+     return true;
+  }
+  const auto cf_handle = cf_manager.get_or_create_cf(rdb, EDG_DB_CF_NAME);
+  const auto status = rdb->Delete({}, cf_handle, opt_path);
+  if (!status.ok()) {
+    DBUG_PRINT("rocksdb::DB->Delete", ("status: %s", status.ToString()));
+    return true;
+  }
+  return false;
+}
+
+
+/**
+ * EDB: Discover database names in rocksdb
+ *
+ * @details Discover databases in rocksdb
+ *
+ * @param opt_path  opt file path. Used as key in rocksdb.
+ * @return Vector of database names.
+*/
+std::vector<std::string> rocksdb_db_discover(const char *opt_path) {
+  DBUG_PRINT("rocksdb_db_discover",("path: %s", opt_path));
+  if (!rdb) {
+    return {};
+  }
+  const auto cf_handle = cf_manager.get_or_create_cf(rdb, EDG_DB_CF_NAME);
+  const std::unique_ptr<rocksdb::Iterator> iter(rdb->NewIterator({}, cf_handle));
+  if (!iter) {
+    return {};
+  }
+
+  std::vector<std::string> result;
+  for (iter->Seek(opt_path); iter->Valid(); iter->Next()) {
+    const std::string key = iter->key().ToString();
+    /* Only add the current key if it is a prefix */
+    if (key.rfind(opt_path, 0) == 0) {
+      // get database name from opt file path
+      const size_t end_idx = key.rfind(FN_LIBCHAR);
+      auto dirpath = key.substr(0, end_idx - 1);
+      const size_t base_idx = dirpath.rfind(FN_LIBCHAR);
+      assert(0 < base_idx && base_idx < end_idx && end_idx < key.size());
+      result.push_back(key.substr(base_idx + 1, end_idx - base_idx - 1));
     }
   }
   return result;

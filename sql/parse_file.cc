@@ -360,20 +360,38 @@ sql_parse_prepare(const LEX_CSTRING *file_name, MEM_ROOT *mem_root,
 		  bool bad_format_errors)
 {
   size_t len;
-  char *buff, *end, *sign;
+  char *frm_buff, *buff, *end, *sign;
   File_parser *parser;
   DBUG_ENTER("sql_parse_prepare");
 
   if (myrocks::rocksdb_frm_read(file_name->str,
-                                reinterpret_cast<uchar **>(&buff), &len))
+                                reinterpret_cast<uchar **>(&frm_buff), &len))
   {
+    DBUG_RETURN(0);
+  }
+
+  if (len > INT_MAX-1)
+  {
+    my_error(ER_FPARSER_TOO_BIG_FILE, MYF(0), file_name->str);
+    my_free(frm_buff);
     DBUG_RETURN(0);
   }
 
   if (!(parser= new(mem_root) File_parser))
   {
+    my_free(frm_buff);
     DBUG_RETURN(0);
   }
+
+  if (!(buff= (char*)alloc_root(mem_root, len+1)))
+  {
+    my_free(frm_buff);
+    DBUG_RETURN(0);
+  }
+  memcpy(buff, frm_buff, len);
+  my_free(frm_buff);
+
+
 
 
 

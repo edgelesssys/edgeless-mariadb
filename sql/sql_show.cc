@@ -66,6 +66,9 @@
 #include "opt_trace.h"
 #include "my_cpu.h"
 
+/* EDB: rocksdb header */
+#include "rocksdb/ha_rocksdb.h"
+
 enum enum_i_s_events_fields
 {
   ISE_EVENT_CATALOG= 0,
@@ -886,16 +889,16 @@ enum find_files_result {
 };
 
 /*
-  find_files() - find files in a given directory.
+  find_databases() - find databases in a given directory.
 
   SYNOPSIS
-    find_files()
+    find_databases()
     thd                 thread handler
-    files               put found files in this list
+    databases           put found databases in this list
     db                  database name to search tables in
                         or NULL to search for databases
     path                path to database
-    wild                filter for found files
+    wild                filter for found databases
 
   RETURN
     FIND_FILES_OK       success
@@ -905,58 +908,18 @@ enum find_files_result {
 
 
 static find_files_result
-find_files(THD *thd, Dynamic_array<LEX_CSTRING*> *files, LEX_CSTRING *db,
+find_databases(THD *thd, Dynamic_array<LEX_CSTRING*> *databases, LEX_CSTRING *db,
            const char *path, const LEX_CSTRING *wild)
 {
-  MY_DIR *dirp;
-  Discovered_table_list tl(thd, files, wild);
-  DBUG_ENTER("find_files");
+  Discovered_table_list tl(thd, databases, wild);
+  DBUG_ENTER("find_databases");
 
-  if (!(dirp = my_dir(path, MY_THREAD_SPECIFIC | (db ? 0 : MY_WANT_STAT))))
-  {
-    if (my_errno == ENOENT)
-      my_error(ER_BAD_DB_ERROR, MYF(0), db->str);
-    else
-      my_error(ER_CANT_READ_DIR, MYF(0), path, my_errno);
-    DBUG_RETURN(FIND_FILES_DIR);
-  }
-
-  if (!db)                                           /* Return databases */
-  {
-    for (uint i=0; i < (uint) dirp->number_of_files; i++)
-    {
-      FILEINFO *file= dirp->dir_entry+i;
-#ifdef USE_SYMDIR
-      char *ext;
-      char buff[FN_REFLEN];
-      if (my_use_symdir && !strcmp(ext=fn_ext(file->name), ".sym"))
-      {
-        /* Only show the sym file if it points to a directory */
-        char *end;
-        *ext=0;                                 /* Remove extension */
-        unpack_dirname(buff, file->name);
-        end= strend(buff);
-        if (end != buff && end[-1] == FN_LIBCHAR)
-          end[-1]= 0;				// Remove end FN_LIBCHAR
-        if (!mysql_file_stat(key_file_misc, buff, file->mystat, MYF(0)))
-               continue;
-       }
-#endif
-      if (!MY_S_ISDIR(file->mystat->st_mode))
-        continue;
-
-      if (is_in_ignore_db_dirs_list(file->name))
-        continue;
-
-      if (tl.add_file(file->name))
-        goto err;
+  for (const auto &dbname : myrocks::rocksdb_db_discover(path)) {
+    if (tl.add_file(dbname.c_str())) {
+      DBUG_RETURN(FIND_FILES_OOM);
     }
   }
-  else
-  {
-    if (ha_discover_table_names(thd, db, dirp, &tl, false))
-      goto err;
-  }
+
   if (is_show_command(thd))
     tl.sort();
 #ifndef DBUG_OFF
@@ -971,14 +934,62 @@ find_files(THD *thd, Dynamic_array<LEX_CSTRING*> *files, LEX_CSTRING *db,
   }
 #endif
 
-  DBUG_PRINT("info",("found: %zu files", files->elements()));
-  my_dirend(dirp);
+  DBUG_PRINT("info",("found: %zu databases", databases->elements()));
 
   DBUG_RETURN(FIND_FILES_OK);
+}
 
-err:
-  my_dirend(dirp);
-  DBUG_RETURN(FIND_FILES_OOM);
+/*
+  find_tables() - find tables for a given database.
+
+  SYNOPSIS
+    find_tables()
+    thd                 thread handler
+    tables              put found tables in this list
+    db                  database name to search tables in
+                        or NULL to search for databases
+    path                path to database
+    wild                filter for found tables
+
+  RETURN
+    FIND_FILES_OK       success
+    FIND_FILES_OOM      out of memory error
+    FIND_FILES_DIR      no such directory, or directory can't be read
+*/
+
+static find_files_result find_tables(THD *thd,
+                                    Dynamic_array<LEX_CSTRING *> *tables,
+                                    LEX_CSTRING *db, const char *path,
+                                    const LEX_CSTRING *wild)
+{
+  Discovered_table_list tl(thd, tables, wild);
+  DBUG_ENTER("find_tables");
+
+  for (const auto &dbname : myrocks::rocksdb_frm_discover(path))
+  {
+    if (tl.add_file(dbname.c_str()))
+    {
+      DBUG_RETURN(FIND_FILES_OOM);
+    }
+  }
+
+  if (is_show_command(thd))
+    tl.sort();
+#ifndef DBUG_OFF
+  else
+  {
+    /*
+      sort_desc() is used to find easier unstable mtr tests that query
+      INFORMATION_SCHEMA.{SCHEMATA|TABLES} without a proper ORDER BY.
+      This can be removed in some release after 10.3 (e.g. in 10.4).
+    */
+    tl.sort_desc();
+  }
+#endif
+
+  DBUG_PRINT("info", ("found: %zu tables", tables->elements()));
+
+  DBUG_RETURN(FIND_FILES_OK);
 }
 
 
@@ -4263,7 +4274,7 @@ static int make_db_list(THD *thd, Dynamic_array<LEX_CSTRING*> *files,
       if (files->append_val(&INFORMATION_SCHEMA_NAME))
         return 1;
     }
-    return find_files(thd, files, 0, mysql_data_home,
+    return find_databases(thd, files, 0, mysql_data_home,
                       &lookup_field_vals->db_value);
   }
 
@@ -4302,7 +4313,7 @@ static int make_db_list(THD *thd, Dynamic_array<LEX_CSTRING*> *files,
   */
   if (files->append_val(&INFORMATION_SCHEMA_NAME))
     return 1;
-  return find_files(thd, files, 0, mysql_data_home, &null_clex_str);
+  return find_databases(thd, files, 0, mysql_data_home, &null_clex_str);
 }
 
 
@@ -4453,7 +4464,7 @@ make_table_name_list(THD *thd, Dynamic_array<LEX_CSTRING*> *table_names,
     return (schema_tables_add(thd, table_names,
                               lookup_field_vals->table_value.str));
 
-  find_files_result res= find_files(thd, table_names, db_name, path,
+  find_files_result res= find_tables(thd, table_names, db_name, path,
                                     &lookup_field_vals->table_value);
   if (res != FIND_FILES_OK)
   {
@@ -5300,13 +5311,10 @@ static bool verify_database_directory_exists(const LEX_CSTRING &dbname)
 {
   DBUG_ENTER("verify_database_directory_exists");
   char path[FN_REFLEN + 16];
-  uint path_len;
-  MY_STAT stat_info;
   if (!dbname.str[0])
     DBUG_RETURN(true); // Empty database name: does not exist.
-  path_len= build_table_filename(path, sizeof(path) - 1, dbname.str, "", "", 0);
-  path[path_len - 1]= 0;
-  if (!mysql_file_stat(key_file_misc, path, &stat_info, MYF(0)))
+  build_table_filename(path, sizeof(path) - 1, dbname.str, "", MY_DB_OPT_FILE, 0);
+  if (!myrocks::rocksdb_db_exists(path))
     DBUG_RETURN(true); // The database directory was not found: does not exist.
   DBUG_RETURN(false);  // The database directory was found.
 }

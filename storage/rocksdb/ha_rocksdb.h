@@ -1065,5 +1065,15 @@ extern bool prevent_myrocks_loading;
 
 void sql_print_verbose_info(const char *format, ...);
 
+/*
+ * EDB: Storing/managing frm files in rocksdb.
+ * Helper functions to handle storing/managing frm files in rocksdb instead of the disk.
+ */
+bool rocksdb_frm_exists(const char *frm_path);
+bool rocksdb_frm_write(char *frm_path, const uchar *frm, size_t len);
+bool rocksdb_frm_read(const char *frm_path, uchar **frm, size_t *len);
+bool rocksdb_frm_delete(const char *frm_path);
+std::vector<std::string> rocksdb_frm_discover(const char *frm_path);
+
 }  // namespace myrocks
 

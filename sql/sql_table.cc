@@ -58,6 +58,9 @@
 #include "sql_insert.h"                        // binlog_drop_table
 #include <algorithm>
 
+/* EDB: rocksdb header */
+#include "rocksdb/ha_rocksdb.h"
+
 #ifdef __WIN__
 #include <io.h>
 #endif
@@ -449,7 +452,7 @@ uint check_n_cut_mysql50_prefix(const char *from, char *to, size_t to_length)
 static bool check_if_frm_exists(char *path, const char *db, const char *table)
 {
   fn_format(path, table, db, reg_ext, MYF(0));
-  return !access(path, F_OK);
+  return myrocks::rocksdb_frm_exists(path);
 }
 
 
@@ -1156,9 +1159,7 @@ static int execute_ddl_log_action(THD *thd, DDL_LOG_ENTRY *ddl_log_entry)
         if (frm_action)
         {
           strxmov(to_path, ddl_log_entry->name, reg_ext, NullS);
-          if (unlikely((error= mysql_file_delete(key_file_frm, to_path,
-                                                 MYF(MY_WME |
-                                                     MY_IGNORE_ENOENT)))))
+          if (unlikely(error= myrocks::rocksdb_frm_delete(to_path)))
             break;
 #ifdef WITH_PARTITION_STORAGE_ENGINE
           strxmov(to_path, ddl_log_entry->name, PAR_EXT, NullS);
@@ -1796,6 +1797,8 @@ uint build_table_shadow_filename(char *buff, size_t bufflen,
     A support method that creates a new frm file and in this process it
     regenerates the partition data. It works fine also for non-partitioned
     tables since it only handles partitioned data if it exists.
+
+  EDB: Write to rocksdb instead of disk.
 */
 
 bool mysql_write_frm(ALTER_PARTITION_PARAM_TYPE *lpt, uint flags)
@@ -1809,6 +1812,8 @@ bool mysql_write_frm(ALTER_PARTITION_PARAM_TYPE *lpt, uint flags)
   char path[FN_REFLEN+1];
   char shadow_path[FN_REFLEN+1];
   char shadow_frm_name[FN_REFLEN+1];
+  uchar *shadow= nullptr;
+  size_t shadow_length;
   char frm_name[FN_REFLEN+1];
 #ifdef WITH_PARTITION_STORAGE_ENGINE
   char *part_syntax_buf;
@@ -1857,8 +1862,7 @@ bool mysql_write_frm(ALTER_PARTITION_PARAM_TYPE *lpt, uint flags)
       goto end;
     }
 
-    int error= writefile(shadow_frm_name, lpt->db.str, lpt->table_name.str,
-                         lpt->create_info->tmp_table(), frm.str, frm.length);
+    int error= myrocks::rocksdb_frm_write(shadow_frm_name, frm.str, frm.length);
     my_free(const_cast<uchar*>(frm.str));
 
     if (unlikely(error) ||
@@ -1866,7 +1870,7 @@ bool mysql_write_frm(ALTER_PARTITION_PARAM_TYPE *lpt, uint flags)
                  ha_create_partitioning_metadata(shadow_path,
                                                  NULL, CHF_CREATE_FLAG)))
     {
-      mysql_file_delete(key_file_frm, shadow_frm_name, MYF(0));
+      myrocks::rocksdb_frm_delete(shadow_frm_name);
       error= 1;
       goto end;
     }
@@ -1892,19 +1896,18 @@ bool mysql_write_frm(ALTER_PARTITION_PARAM_TYPE *lpt, uint flags)
       completing this we write a new phase to the log entry that will
       deactivate it.
     */
-    if (mysql_file_delete(key_file_frm, frm_name, MYF(MY_WME)) ||
+    if (myrocks::rocksdb_frm_read(shadow_frm_name, &shadow, &shadow_length) ||
+        myrocks::rocksdb_frm_delete(shadow_frm_name) ||
 #ifdef WITH_PARTITION_STORAGE_ENGINE
         lpt->table->file->ha_create_partitioning_metadata(path, shadow_path,
                                                           CHF_DELETE_FLAG) ||
         deactivate_ddl_log_entry(part_info->frm_log_entry->entry_pos) ||
         (sync_ddl_log(), FALSE) ||
-        mysql_file_rename(key_file_frm,
-                          shadow_frm_name, frm_name, MYF(MY_WME)) ||
+        myrocks::rocksdb_frm_write(frm_name, shadow, shadow_length) ||
         lpt->table->file->ha_create_partitioning_metadata(path, shadow_path,
                                                           CHF_RENAME_FLAG))
 #else
-        mysql_file_rename(key_file_frm,
-                          shadow_frm_name, frm_name, MYF(MY_WME)))
+        myrocks::rocksdb_frm_write(frm_name, shadow, shadow_length))
 #endif
     {
       error= 1;
@@ -1952,6 +1955,7 @@ err:
   }
 
 end:
+  my_free(shadow);
   DBUG_RETURN(error);
 }
 
@@ -2526,7 +2530,7 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables, bool if_exists,
       */
       strmov(path_end, reg_ext);
       if ((likely(!error) || non_existing_table_error(error)) &&
-          !access(path, F_OK))
+          myrocks::rocksdb_frm_exists(path))
       {
         int frm_delete_error= 0;
         /* Delete the table definition file */
@@ -2537,13 +2541,10 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables, bool if_exists,
             or the .frm file existed but no table in engine.
             Delete it silently if it exists
           */
-          if (mysql_file_delete(key_file_frm, path,
-                                MYF(MY_WME | MY_IGNORE_ENOENT)))
+          if (myrocks::rocksdb_frm_delete(path))
             frm_delete_error= my_errno;
         }
-        else if (unlikely(mysql_file_delete(key_file_frm, path,
-                                            !error ? MYF(MY_WME) :
-                                            MYF(MY_WME | MY_IGNORE_ENOENT))))
+        else if (unlikely(myrocks::rocksdb_frm_delete(path)))
         {
           frm_delete_error= my_errno;
           DBUG_ASSERT(frm_delete_error);
@@ -2586,7 +2587,7 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables, bool if_exists,
 
         /* Delete the frm file again (just in case it was rediscovered) */
         strmov(path_end, reg_ext);
-        if (mysql_file_delete(key_file_frm, path, MYF(MY_WME|MY_IGNORE_ENOENT)))
+        if (myrocks::rocksdb_frm_delete(path))
           ferror= my_errno;
       }
       if (!error)
@@ -2889,7 +2890,7 @@ bool quick_rm_table(THD *thd, handlerton *base, const LEX_CSTRING *db,
     build_table_filename(path, sizeof(path)-1, db->str, table_name->str,
                          reg_ext, flags);
   if (!(flags & NO_FRM_RENAME))
-    if (mysql_file_delete(key_file_frm, path, MYF(0)))
+    if (myrocks::rocksdb_frm_delete(path))
       error= 1; /* purecov: inspected */
   path[path_length - reg_ext_length]= '\0'; // Remove reg_ext
   if ((flags & (NO_HA_TABLE | NO_PAR_TABLE)) == NO_HA_TABLE)

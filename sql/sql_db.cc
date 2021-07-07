@@ -48,6 +48,9 @@
 #endif
 #include "debug_sync.h"
 
+/* EDB: rocksdb header */
+#include "rocksdb/ha_rocksdb.h"
+
 #define MAX_DROP_TABLE_Q_LEN      1024
 
 const char *del_exts[]= {".BAK", ".opt", NullS};
@@ -354,7 +357,6 @@ static void del_dbopt(const char *path)
 static bool write_db_opt(THD *thd, const char *path,
                          Schema_specification_st *create)
 {
-  File file;
   char buf[256+DATABASE_COMMENT_MAXLEN];
   bool error=1;
 
@@ -389,8 +391,6 @@ static bool write_db_opt(THD *thd, const char *path,
   if (put_dbopt(path, create))
     return 1;
 
-  if ((file= mysql_file_create(key_file_dbopt, path, CREATE_MODE,
-                               O_RDWR | O_TRUNC, MYF(MY_WME))) >= 0)
   {
     ulong length;
     length= (ulong) (strxnmov(buf, sizeof(buf)-1, "default-character-set=",
@@ -405,9 +405,8 @@ static bool write_db_opt(THD *thd, const char *path,
                                 "\n", NullS) - buf);
 
     /* Error is written by mysql_file_write */
-    if (!mysql_file_write(file, (uchar*) buf, length, MYF(MY_NABP+MY_WME)))
+    if (!myrocks::rocksdb_db_write_opt(path, buf, length))
       error=0;
-    mysql_file_close(file, MYF(0));
   }
   return error;
 }
@@ -430,8 +429,7 @@ static bool write_db_opt(THD *thd, const char *path,
 
 bool load_db_opt(THD *thd, const char *path, Schema_specification_st *create)
 {
-  File file;
-  char buf[256+DATABASE_COMMENT_MAXLEN];
+  char *buf;
   DBUG_ENTER("load_db_opt");
   bool error=1;
   size_t nbytes;
@@ -444,15 +442,9 @@ bool load_db_opt(THD *thd, const char *path, Schema_specification_st *create)
     DBUG_RETURN(0);
 
   /* Otherwise, load options from the .opt file */
-  if ((file= mysql_file_open(key_file_dbopt,
-                             path, O_RDONLY | O_SHARE, MYF(0))) < 0)
+  if (myrocks::rocksdb_db_read_opt(path, &buf, &nbytes))
     goto err1;
 
-  IO_CACHE cache;
-  if (init_io_cache(&cache, file, IO_SIZE, READ_CACHE, 0, 0, MYF(0)))
-    goto err2;
-
-  while ((int) (nbytes= my_b_gets(&cache, (char*) buf, sizeof(buf))) > 0)
   {
     char *pos= buf+nbytes-1;
     /* Remove end space and control characters */
@@ -503,9 +495,7 @@ bool load_db_opt(THD *thd, const char *path, Schema_specification_st *create)
   */
   error= put_dbopt(path, create);
 
-  end_io_cache(&cache);
-err2:
-  mysql_file_close(file, MYF(0));
+  my_free(buf);
 err1:
   DBUG_RETURN(error);
 }
@@ -619,9 +609,8 @@ mysql_create_db_internal(THD *thd, const LEX_CSTRING *db,
                          Schema_specification_st *create_info,
                          bool silent)
 {
-  char	 path[FN_REFLEN+16];
-  MY_STAT stat_info;
-  uint path_len;
+  char	 db_path[FN_REFLEN+16];
+  char	 opt_path[FN_REFLEN+16];
   DBUG_ENTER("mysql_create_db");
 
   /* do not create 'information_schema' db */
@@ -637,19 +626,14 @@ mysql_create_db_internal(THD *thd, const LEX_CSTRING *db,
   if (lock_schema_name(thd, dbnorm))
     DBUG_RETURN(-1);
 
-  /* Check directory */
-  path_len= build_table_filename(path, sizeof(path) - 1, db->str, "", "", 0);
-  path[path_len-1]= 0;                    // Remove last '/' from path
+  /* Check opts file */
+  build_table_filename(db_path, sizeof(db_path) - 1, db->str, "", "", 0);
+  build_table_filename(opt_path, sizeof(opt_path) - 1, db->str, "", MY_DB_OPT_FILE, 0);
 
   long affected_rows= 1;
-  if (!mysql_file_stat(key_file_misc, path, &stat_info, MYF(0)))
+  if (!myrocks::rocksdb_db_exists(opt_path))
   {
-    // The database directory does not exist, or my_file_stat() failed
-    if (my_errno != ENOENT)
-    {
-      my_error(EE_STAT, MYF(0), path, my_errno);
-      DBUG_RETURN(1);
-    }
+    // The database directory does not exist -> continue
   }
   else if (options.or_replace())
   {
@@ -676,23 +660,19 @@ mysql_create_db_internal(THD *thd, const LEX_CSTRING *db,
     DBUG_RETURN(-1);
   }
 
-
-  if (my_mkdir(path, 0777, MYF(0)) < 0)
+  if (my_mkdir(db_path, 0777, MYF(0)) < 0)
   {
     my_error(ER_CANT_CREATE_DB, MYF(0), db->str, my_errno);
     DBUG_RETURN(-1);
   }
 
-  path[path_len-1]= FN_LIBCHAR;
-  strmake(path+path_len, MY_DB_OPT_FILE, sizeof(path)-path_len-1);
-  if (write_db_opt(thd, path, create_info))
+  if (write_db_opt(thd, opt_path, create_info))
   {
     /*
       Could not create options file.
       Restore things to beginning.
     */
-    path[path_len]= 0;
-    if (rmdir(path) >= 0)
+    if (rmdir(db_path) >= 0)
       DBUG_RETURN(-1);
     /*
       We come here when we managed to create the database, but not the option
@@ -859,7 +839,9 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists, bool silen
 {
   ulong deleted_tables= 0;
   bool error= true, rm_mysql_schema;
-  char	path[FN_REFLEN + 16];
+  char	opt_path[FN_REFLEN + 16];
+  char	frm_path[FN_REFLEN + 16];
+  char	db_path[FN_REFLEN + 16];
   MY_DIR *dirp;
   uint length;
   TABLE_LIST *tables= NULL;
@@ -873,26 +855,30 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists, bool silen
   if (lock_schema_name(thd, dbnorm))
     DBUG_RETURN(true);
 
-  length= build_table_filename(path, sizeof(path) - 1, db->str, "", "", 0);
-  strmov(path+length, MY_DB_OPT_FILE);		// Append db option file name
-  del_dbopt(path);				// Remove dboption hash entry
+  length= build_table_filename(opt_path, sizeof(opt_path) - 1, db->str, "", "", 0);
+  strmov(opt_path + length, MY_DB_OPT_FILE);    // Append db option file name
+  del_dbopt(opt_path);				// Remove dboption hash entry
   /*
      Now remove the db.opt file.
      The 'find_db_tables_and_rm_known_files' doesn't remove this file
      if there exists a table with the name 'db', so let's just do it
      separately. We know this file exists and needs to be deleted anyway.
   */
-  if (mysql_file_delete_with_symlink(key_file_misc, path, "", MYF(0)) &&
-      my_errno != ENOENT)
+  if (myrocks::rocksdb_db_delete(opt_path))
   {
-    my_error(EE_DELETE, MYF(0), path, my_errno);
+    my_error(EE_DELETE, MYF(0), opt_path, my_errno);
     DBUG_RETURN(true);
   }
-    
-  path[length]= '\0';				// Remove file name
+
+  build_table_filename(db_path, sizeof(db_path) - 1, db->str, "", "", 0);
+  for (const auto &tablename : myrocks::rocksdb_frm_discover(db_path)) {
+    build_table_filename(frm_path, sizeof(frm_path) - 1, db->str, tablename.c_str(), reg_ext, 0);
+    myrocks::rocksdb_frm_delete(frm_path);
+  }
+
 
   /* See if the directory exists */
-  if (!(dirp= my_dir(path,MYF(MY_DONT_SORT))))
+  if (!(dirp= my_dir(db_path,MYF(MY_DONT_SORT))))
   {
     if (!if_exists)
     {
@@ -909,7 +895,7 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists, bool silen
     }
   }
 
-  if (find_db_tables_and_rm_known_files(thd, dirp, dbnorm, path, &tables))
+  if (find_db_tables_and_rm_known_files(thd, dirp, dbnorm, db_path, &tables))
     goto exit;
 
   /*
@@ -967,7 +953,7 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists, bool silen
       made, these drops should still not be logged.
     */
 
-    ha_drop_database(path);
+    ha_drop_database(db_path);
     tmp_disable_binlog(thd);
     query_cache_invalidate1(thd, dbnorm);
     if (!rm_mysql_schema)
@@ -983,7 +969,7 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists, bool silen
       If the directory is a symbolic link, remove the link first, then
       remove the directory the symbolic link pointed at
     */
-    error= rm_dir_w_symlink(path, true);
+    error= rm_dir_w_symlink(db_path, true);
   }
   thd->pop_internal_handler();
 
@@ -1753,7 +1739,7 @@ bool mysql_upgrade_db(THD *thd, const LEX_CSTRING *old_db)
   length= build_table_filename(path, sizeof(path)-1, old_db->str, "", "", 0);
   if (length && path[length-1] == FN_LIBCHAR)
     path[length-1]=0;                            // remove ending '\'
-  if (unlikely((error= my_access(path,F_OK))))
+  if (!myrocks::rocksdb_db_exists(path))
   {
     my_error(ER_BAD_DB_ERROR, MYF(0), old_db->str);
     goto exit;
@@ -1766,24 +1752,13 @@ bool mysql_upgrade_db(THD *thd, const LEX_CSTRING *old_db)
     goto exit;
 
   /* Step2: Move tables to the new database */
-  if ((dirp = my_dir(path,MYF(MY_DONT_SORT))))
   {
-    uint nfiles= (uint) dirp->number_of_files;
-    for (uint idx=0 ; idx < nfiles && !thd->killed ; idx++)
+    for (const auto &filename : myrocks::rocksdb_frm_discover(path))
     {
-      FILEINFO *file= dirp->dir_entry + idx;
-      char *extension, tname[FN_REFLEN + 1];
+      char tname[FN_REFLEN + 1];
       LEX_CSTRING table_str;
-      DBUG_PRINT("info",("Examining: %s", file->name));
 
-      /* skiping non-FRM files */
-      if (!(extension= (char*) fn_frm_ext(file->name)))
-        continue;
-
-      /* A frm file found, add the table info rename list */
-      *extension= '\0';
-
-      table_str.length= filename_to_tablename(file->name,
+      table_str.length= filename_to_tablename(filename.c_str(),
                                               tname, sizeof(tname)-1);
       table_str.str= (char*) thd->memdup(tname, table_str.length + 1);
       Table_ident *old_ident= new Table_ident(thd, old_db, &table_str, 0);
@@ -1797,11 +1772,9 @@ bool mysql_upgrade_db(THD *thd, const LEX_CSTRING *old_db)
                                  MDL_EXCLUSIVE))
       {
         error= 1;
-        my_dirend(dirp);
         goto exit;
       }
     }
-    my_dirend(dirp);  
   }
 
   if ((table_list= thd->lex->query_tables) &&
@@ -1820,7 +1793,7 @@ bool mysql_upgrade_db(THD *thd, const LEX_CSTRING *old_db)
     */
     build_table_filename(path, sizeof(path)-1,
                          new_db.str,"",MY_DB_OPT_FILE, 0);
-    mysql_file_delete(key_file_dbopt, path, MYF(MY_WME));
+    myrocks::rocksdb_db_delete(path);
     length= build_table_filename(path, sizeof(path)-1, new_db.str, "", "", 0);
     if (length && path[length-1] == FN_LIBCHAR)
       path[length-1]=0;                            // remove ending '\'
@@ -1921,18 +1894,14 @@ exit:
 
 bool check_db_dir_existence(const char *db_name)
 {
-  char db_dir_path[FN_REFLEN + 1];
+  char db_dir_path[FN_REFLEN + 16];
   uint db_dir_path_len;
 
   db_dir_path_len= build_table_filename(db_dir_path, sizeof(db_dir_path) - 1,
                                         db_name, "", "", 0);
+  strmov(db_dir_path+db_dir_path_len, MY_DB_OPT_FILE); // Append db option file name
 
-  if (db_dir_path_len && db_dir_path[db_dir_path_len - 1] == FN_LIBCHAR)
-    db_dir_path[db_dir_path_len - 1]= 0;
-
-  /* Check access. */
-
-  return my_access(db_dir_path, F_OK);
+  return !myrocks::rocksdb_db_exists(db_dir_path);
 }
 
 

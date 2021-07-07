@@ -4716,15 +4716,25 @@ rename_file_ext(const char * from,const char * to,const char * ext)
 {
   char from_b[FN_REFLEN],to_b[FN_REFLEN];
   uchar *from_frm= nullptr;
-  size_t from_length;
+  int err = 1;
+  size_t from_length = 0;
   (void) strxmov(from_b,from,ext,NullS);
   (void) strxmov(to_b,to,ext,NullS);
-  if (myrocks::rocksdb_frm_read(from_b, &from_frm, &from_length) ||
-      myrocks::rocksdb_frm_delete(from_b))
+  if (myrocks::rocksdb_frm_read(from_b, &from_frm, &from_length))
   {
-    return 1;
+    goto ret;
   }
-  return myrocks::rocksdb_frm_write(to_b, from_frm, from_length);
+  if (myrocks::rocksdb_frm_delete(from_b))
+  {
+    goto ret;
+  }
+  err = myrocks::rocksdb_frm_write(to_b, from_frm, from_length);
+
+ret:
+  if (from_frm) {
+    my_free(from_frm);
+  }
+  return err;
 }
 
 

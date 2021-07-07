@@ -13883,6 +13883,222 @@ bool ha_rocksdb::can_use_bloom_filter(THD *thd, const Rdb_key_def &kd,
   return can_use;
 }
 
+/*
+ * EDB: Helper functions to store/manage .frm files in rocksdb instead of filesystem.
+ *
+ */
+
+const std::string EDG_FRM_CF_NAME("edg_frm_cf");
+
+/**
+ * EDB: Checks if a frm file exists in rocksdb
+ *
+ * @details Checks if a MariaDB table definitions as .frm file exists in rocksdb
+ *
+ * @param frm_path  Path of the frm file. Used as key in rocksdb.
+*/
+bool rocksdb_frm_exists(const char *frm_path) {
+  DBUG_PRINT("rocksdb_frm_exists",("path: %s", frm_path));
+  if (!rdb) {
+    return false;
+  }
+  const auto cf_handle = cf_manager.get_or_create_cf(rdb, EDG_FRM_CF_NAME);
+  std::string value;
+  const auto status = rdb->Get({}, cf_handle, frm_path, &value);
+  if (!status.ok()) {
+    DBUG_PRINT("rocksdb::DB->Get", ("status: %s", status.ToString()));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * EDB: Store frm file in rocksdb
+ *
+ * @details Store MariaDB table definitions as .frm binary image in rocksdb
+ *
+ * @param frm_path  Path of the frm file. Used as key in rocksdb.
+ * @param frm       Binary frm image.
+ * @param len       Size of frm image.
+*/
+bool rocksdb_frm_write(char *frm_path, const uchar *frm, size_t len) {
+  DBUG_PRINT("rocksdb_frm_write",("path: %s", frm_path));
+  if (!rdb) {
+     return true;
+  }
+  const auto cf_handle = cf_manager.get_or_create_cf(rdb, EDG_FRM_CF_NAME);
+  const auto status = rdb->Put({}, cf_handle, frm_path, {reinterpret_cast<const char*>(frm), len});
+  if (!status.ok()) {
+    DBUG_PRINT("rocksdb::DB->Put", ("status: %s", status.ToString()));
+    return true;
+  }
+  return false;
+}
+
+
+/**
+ * EDB: Read frm file from rocksdb
+ *
+ * @details Read MariaDB table definitions as .frm file from rocksdb
+ *
+ * @param frm_path  Path of the frm file. Used as key in rocksdb.
+ * @param frm       Pointer to return binary frm image.
+ * @param len       Pointer to return size of frm image.
+*/
+bool rocksdb_frm_read(const char *frm_path, uchar **frm, size_t *len) {
+  DBUG_PRINT("rocksdb_frm_read",("path: %s", frm_path));
+  if (!rdb) {
+     return true;
+  }
+  const auto cf_handle = cf_manager.get_or_create_cf(rdb, EDG_FRM_CF_NAME);
+  std::string value;
+  const auto status = rdb->Get({}, cf_handle, frm_path, &value);
+  if (!status.ok()) {
+    DBUG_PRINT("rocksdb::DB->Get", ("status: %s", status.ToString()));
+    return true;
+  }
+
+  /* rocksdb_frm_read is called before mysqld is done initializing, hence, we can't use MY_THREAD_SPECIFIC */
+  const auto buf= static_cast<uchar*>(my_malloc(PSI_INSTRUMENT_ME, value.size()+1, MYF(MY_WME)));
+  if (!buf) {
+    return true;
+  }
+
+  memcpy(buf, value.c_str(), value.size());
+  buf[value.size()]= 0;
+  *frm= buf;
+  *len= value.size();
+  return false;
+}
+
+/**
+ * EDB: Delete frm file from rocksdb
+ *
+ * @details Delete MariaDB table definitions from rocksdb
+ *
+ * @param frm_path  Path of the frm file. Used as key in rocksdb.
+*/
+bool rocksdb_frm_delete(const char *frm_path) {
+  DBUG_PRINT("rocksdb_frm_delete",("path: %s", frm_path));
+  if (!rdb) {
+     return true;
+  }
+  const auto cf_handle = cf_manager.get_or_create_cf(rdb, EDG_FRM_CF_NAME);
+  const auto status = rdb->Delete({}, cf_handle, frm_path);
+  if (!status.ok()) {
+    DBUG_PRINT("rocksdb::DB->Delete", ("status: %s", status.ToString()));
+    return true;
+  }
+  return false;
+}
+
+
+/**
+ * EDB: Discover table names based on frm files in rocksdb
+ *
+ * @details Discover MariaDB table definitions as .frm files in rocksdb
+ *
+ * @param frm_path  Prefix of the frm files. Used as prefix in rocksdb.
+ * @return Vector of table names.
+*/
+std::vector<std::string> rocksdb_frm_discover(const char *frm_path) {
+  DBUG_PRINT("rocksdb_frm_discover",("path: %s", frm_path));
+  if (!rdb) {
+    return {};
+  }
+  const auto cf_handle = cf_manager.get_or_create_cf(rdb, EDG_FRM_CF_NAME);
+  const std::unique_ptr<rocksdb::Iterator> iter(rdb->NewIterator({}, cf_handle));
+  if (!iter) {
+    return {};
+  }
+
+  std::vector<std::string> result;
+  for (iter->Seek(frm_path); iter->Valid(); iter->Next()) {
+    const std::string key = iter->key().ToString();
+    /* Only add the current key if it is a prefix */
+    if (key.rfind(frm_path, 0) == 0) {
+      // get table name from frm file path
+      const size_t ext_idx = key.rfind(FN_EXTCHAR);
+      const size_t base_idx = key.rfind(FN_LIBCHAR);
+      assert(0 < base_idx && base_idx < ext_idx && ext_idx < key.size());
+      result.push_back(key.substr(base_idx + 1, ext_idx - base_idx - 1));
+    }
+  }
+  return result;
+}
+
+
+/*
+ * EDB: Helper functions to store/manage database opt files in rocksdb instead of filesystem.
+ *
+ */
+
+const std::string EDG_DB_CF_NAME("edg_db_cf");
+
+/**
+ * EDB: Checks if a database exists in rocksdb
+ *
+ * @details Checks if a database as .opt file exists in rocksdb
+ *
+ * @param opt_path  Path of the opt file. Used as key in rocksdb.
+ *
+ * @return
+    TRUE  A database exists with specified  name.
+    FALSE  The database does not exist.
+*/
+bool rocksdb_db_exists(const char *opt_path) {
+  DBUG_PRINT("rocksdb_db_exists",("path: %s", opt_path));
+  if (!rdb) {
+    return false;
+  }
+  const auto cf_handle = cf_manager.get_or_create_cf(rdb, EDG_DB_CF_NAME);
+  std::string value;
+  const auto status = rdb->Get({}, cf_handle, opt_path, &value);
+  if (!status.ok()) {
+    DBUG_PRINT("rocksdb::DB->Get", ("status: %s", status.ToString()));
+    return false;
+  }
+  return true;
+}
+
+
+/**
+ * EDB: Discover database names in rocksdb
+ *
+ * @details Discover databases in rocksdb
+ *
+ * @param opt_path  opt file path. Used as key in rocksdb.
+ * @return Vector of database names.
+*/
+std::vector<std::string> rocksdb_db_discover(const char *opt_path) {
+  DBUG_PRINT("rocksdb_db_discover",("path: %s", opt_path));
+  if (!rdb) {
+    return {};
+  }
+  const auto cf_handle = cf_manager.get_or_create_cf(rdb, EDG_DB_CF_NAME);
+  const std::unique_ptr<rocksdb::Iterator> iter(rdb->NewIterator({}, cf_handle));
+  if (!iter) {
+    return {};
+  }
+
+  std::vector<std::string> result;
+  for (iter->Seek(opt_path); iter->Valid(); iter->Next()) {
+    const std::string key = iter->key().ToString();
+    /* Only add the current key if it is a prefix */
+    if (key.rfind(opt_path, 0) == 0) {
+      // get database name from opt file path
+      const size_t end_idx = key.rfind(FN_LIBCHAR);
+      auto dirpath = key.substr(0, end_idx - 1);
+      const size_t base_idx = dirpath.rfind(FN_LIBCHAR);
+      assert(0 < base_idx && base_idx < end_idx && end_idx < key.size());
+      result.push_back(key.substr(base_idx + 1, end_idx - base_idx - 1));
+    }
+  }
+  return result;
+}
+
+/* EDB: End of helper functions */
+
 /* For modules that need access to the global data structures */
 rocksdb::TransactionDB *rdb_get_rocksdb_db() { return rdb; }
 

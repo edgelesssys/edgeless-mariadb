@@ -1,6 +1,7 @@
 /*
    Copyright (c) 2012,2013 Monty Program Ab
    Copyright (c) 2020, MariaDB Corporation.
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -3834,31 +3835,16 @@ bool Rdb_validate_tbls::check_frm_file(const std::string &fullpath,
 }
 
 /* Scan the database subdirectory for .frm files */
+/* EDB: Scan in rocksdb instead of disk. */
 bool Rdb_validate_tbls::scan_for_frms(const std::string &datadir,
                                       const std::string &dbname,
                                       bool *has_errors) {
   bool result = true;
-  std::string fullpath = datadir + dbname;
-  struct st_my_dir *dir_info = my_dir(fullpath.c_str(), MYF(MY_DONT_SORT));
+  /* EDB: Paths should be joined in a clean way. We need std::filesystem from C++17 or boost.*/
+  std::string fullpath = datadir + FN_LIBCHAR + dbname;
 
-  /* Access the directory */
-  if (dir_info == nullptr) {
-    // NO_LINT_DEBUG
-    sql_print_warning("RocksDB: Could not open database directory: %s",
-                      fullpath.c_str());
-    return false;
-  }
-
-  /* Scan through the files in the directory */
-  struct fileinfo *file_info = dir_info->dir_entry;
-  for (uint ii = 0; ii < dir_info->number_of_files; ii++, file_info++) {
-    /* Find .frm files that are not temp files (those that contain '#sql') */
-    const char *ext = strrchr(file_info->name, '.');
-    if (ext != nullptr && strstr(file_info->name, tmp_file_prefix) == nullptr &&
-        strcmp(ext, ".frm") == 0) {
-      std::string tablename =
-          std::string(file_info->name, ext - file_info->name);
-
+  for (const auto &tablename : myrocks::rocksdb_frm_discover(fullpath.c_str())) {
+    {
       /* Check to see if the .frm file is from RocksDB */
       if (!check_frm_file(fullpath, dbname, tablename, has_errors)) {
         result = false;
@@ -3872,9 +3858,6 @@ bool Rdb_validate_tbls::scan_for_frms(const std::string &datadir,
     m_list.erase(dbname);
   }
 
-  /* Release the directory entry */
-  my_dirend(dir_info);
-
   return result;
 }
 
@@ -3884,35 +3867,20 @@ bool Rdb_validate_tbls::scan_for_frms(const std::string &datadir,
 */
 bool Rdb_validate_tbls::compare_to_actual_tables(const std::string &datadir,
                                                  bool *has_errors) {
+  std::vector<std::string> dbnames;
   bool result = true;
-  struct st_my_dir *dir_info;
-  struct fileinfo *file_info;
 
-  dir_info = my_dir(datadir.c_str(), MYF(MY_DONT_SORT | MY_WANT_STAT));
-  if (dir_info == nullptr) {
-    // NO_LINT_DEBUG
-    sql_print_warning("RocksDB: could not open datadir: %s", datadir.c_str());
-    return false;
-  }
+  // We are modifying the m_list in scan_for_frms -> get the keys first
+  for(auto const& imap: m_list)
+      dbnames.push_back(imap.first);
 
-  file_info = dir_info->dir_entry;
-  for (uint ii = 0; ii < dir_info->number_of_files; ii++, file_info++) {
-    /* Ignore files/dirs starting with '.' */
-    if (file_info->name[0] == '.') continue;
-
-    /* Ignore all non-directory files */
-    if (!MY_S_ISDIR(file_info->mystat->st_mode)) continue;
-
+  for (auto &db: dbnames) {
     /* Scan all the .frm files in the directory */
-    if (!scan_for_frms(datadir, file_info->name, has_errors)) {
+    if (!scan_for_frms(datadir, db, has_errors)) {
       result = false;
       break;
     }
   }
-
-  /* Release the directory info */
-  my_dirend(dir_info);
-
   return result;
 }
 
@@ -3987,7 +3955,8 @@ bool Rdb_ddl_manager::validate_auto_incr() {
 */
 bool Rdb_ddl_manager::validate_schemas(void) {
   bool has_errors = false;
-  const std::string datadir = std::string(mysql_real_data_home);
+  // EDB: Use relative mysql_data_home to match frm-paths in rocksdb.
+  const std::string datadir = std::string(mysql_data_home);
   Rdb_validate_tbls table_list;
 
   /* Get the list of tables from the database dictionary */

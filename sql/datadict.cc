@@ -1,4 +1,5 @@
 /* Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -20,25 +21,12 @@
 #include "sql_table.h"
 #include "ha_sequence.h"
 
-static int read_string(File file, uchar**to, size_t length)
-{
-  DBUG_ENTER("read_string");
-
-  /* This can't use MY_THREAD_SPECIFIC as it's used on server start */
-  if (!(*to= (uchar*) my_malloc(PSI_INSTRUMENT_ME, length+1,MYF(MY_WME))) ||
-      mysql_file_read(file, *to, length, MYF(MY_NABP)))
-  {
-     my_free(*to);
-    *to= 0;
-    DBUG_RETURN(1);
-  }
-  *((char*) *to+length)= '\0'; // C-style safety
-  DBUG_RETURN (0);
-}
-
+/* EDB: rocksdb header */
+#include "rocksdb/ha_rocksdb.h"
 
 /**
   Check type of .frm if we are not going to parse it.
+  EDB: Read frm files from rocksdb.
 
   @param[in]  thd               The current session.
   @param[in]  path              path to FRM file.
@@ -57,15 +45,13 @@ static int read_string(File file, uchar**to, size_t length)
 
 Table_type dd_frm_type(THD *thd, char *path, LEX_CSTRING *engine_name)
 {
-  File file;
-  uchar header[40];     //"TYPE=VIEW\n" it is 10 characters
-  size_t error;
+  uchar *frm_image= nullptr, *header;
+  size_t frm_length;
   Table_type type= TABLE_TYPE_UNKNOWN;
   uchar dbt;
   DBUG_ENTER("dd_frm_type");
 
-  file= mysql_file_open(key_file_frm, path, O_RDONLY | O_SHARE, MYF(0));
-  if (file < 0)
+  if (!myrocks::rocksdb_frm_exists(path))
     DBUG_RETURN(TABLE_TYPE_UNKNOWN);
 
   /*
@@ -84,8 +70,10 @@ Table_type dd_frm_type(THD *thd, char *path, LEX_CSTRING *engine_name)
     ((char*) (engine_name->str))[0]= 0;
   }
 
-  if (unlikely((error= mysql_file_read(file, (uchar*) header, sizeof(header), MYF(MY_NABP)))))
+  if (myrocks::rocksdb_frm_read(path, &frm_image, &frm_length))
     goto err;
+
+  header = frm_image;
 
   if (unlikely((!strncmp((char*) header, "TYPE=VIEW\n", 10))))
   {
@@ -121,18 +109,7 @@ Table_type dd_frm_type(THD *thd, char *path, LEX_CSTRING *engine_name)
 
   /* read the true engine name */
   {
-    MY_STAT state;  
-    uchar *frm_image= 0;
     uint n_length;
-
-    if (mysql_file_fstat(file, &state, MYF(MY_WME)))
-      goto err;
-
-    if (mysql_file_seek(file, 0, SEEK_SET, MYF(MY_WME)))
-      goto err;
-
-    if (read_string(file, &frm_image, (size_t)state.st_size))
-      goto err;
 
     if ((n_length= uint4korr(frm_image+55)))
     {
@@ -159,13 +136,11 @@ Table_type dd_frm_type(THD *thd, char *path, LEX_CSTRING *engine_name)
         }
       }
     }
-
-    my_free(frm_image);
   }
 
   /* Probably a table. */
 err:
-  mysql_file_close(file, MYF(MY_WME));
+  my_free(frm_image);
   DBUG_RETURN(type);
 }
 

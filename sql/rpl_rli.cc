@@ -1,5 +1,6 @@
 /* Copyright (c) 2006, 2017, Oracle and/or its affiliates.
    Copyright (c) 2010, 2020, MariaDB Corporation.
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -33,6 +34,9 @@
 #include <mysql/service_thd_wait.h>
 #include "lock.h"
 #include "sql_table.h"
+
+/* EDB: rocksdb header */
+#include "rocksdb/ha_rocksdb.h"
 
 static int count_relay_log_space(Relay_log_info* rli);
 bool xa_trans_force_rollback(THD *thd);
@@ -1687,35 +1691,32 @@ end:
   Look for all tables mysql.gtid_slave_pos*. Read all rows from each such
   table found into ARRAY. For each domain id, put the row with highest sub_id
   into HASH.
+  EDB: Check for .frm files in rocksdb instead of disk.
 */
 static int
 scan_all_gtid_slave_pos_table(THD *thd, int (*cb)(THD *, LEX_CSTRING *, void *),
                               void *cb_data)
 {
   char path[FN_REFLEN];
-  MY_DIR *dirp;
 
   thd->reset_for_next_command();
   if (lock_schema_name(thd, MYSQL_SCHEMA_NAME.str))
     return 1;
 
   build_table_filename(path, sizeof(path) - 1, MYSQL_SCHEMA_NAME.str, "", "", 0);
-  if (!(dirp= my_dir(path, MYF(MY_DONT_SORT))))
-  {
-    my_error(ER_FILE_NOT_FOUND, MYF(0), path, my_errno);
-    close_thread_tables(thd);
-    thd->release_transactional_locks();
-    return 1;
-  }
-  else
   {
     size_t i;
-    Dynamic_array<LEX_CSTRING*> files(dirp->number_of_files);
+    Dynamic_array<LEX_CSTRING*> files(1);
     Discovered_table_list tl(thd, &files);
-    int err;
+    int err= 0;
 
-    err= ha_discover_table_names(thd, &MYSQL_SCHEMA_NAME, dirp, &tl, false);
-    my_dirend(dirp);
+    for (const auto &tablename : myrocks::rocksdb_frm_discover(path)) {
+      if (tl.add_file(tablename.c_str())) {
+        err= 1;
+        break;
+      }
+    }
+
     close_thread_tables(thd);
     thd->release_transactional_locks();
     if (err)

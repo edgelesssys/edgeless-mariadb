@@ -1,4 +1,5 @@
 /* Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -28,12 +29,16 @@
 #include <m_ctype.h>
 #include <my_dir.h>
 
+/* EDB: rocksdb header */
+#include "rocksdb/ha_rocksdb.h"
+
 /* from sql_db.cc */
 extern long mysql_rm_arc_files(THD *thd, MY_DIR *dirp, const char *org_path);
 
 
 /**
   Write string with escaping.
+  EDB: Return as std::string instead of writing to .frm file
 
   @param file	  IO_CACHE for record
   @param val_s	  string for writing
@@ -45,7 +50,7 @@ extern long mysql_rm_arc_files(THD *thd, MY_DIR *dirp, const char *org_path);
 */
 
 static my_bool
-write_escaped_string(IO_CACHE *file, LEX_STRING *val_s)
+write_escaped_string(std::string &file, LEX_STRING *val_s)
 {
   char *eos= val_s->str + val_s->length;
   char *ptr= val_s->str;
@@ -58,28 +63,22 @@ write_escaped_string(IO_CACHE *file, LEX_STRING *val_s)
     */
     switch(*ptr) {
     case '\\': // escape character
-      if (my_b_write(file, (const uchar *)STRING_WITH_LEN("\\\\")))
-	return TRUE;
+      file += "\\\\";
       break;
     case '\n': // parameter value delimiter
-      if (my_b_write(file, (const uchar *)STRING_WITH_LEN("\\n")))
-	return TRUE;
+      file += "\\n";
       break;
     case '\0': // problem for some string processing utilities
-      if (my_b_write(file, (const uchar *)STRING_WITH_LEN("\\0")))
-	return TRUE;
+      file += "\\0";
       break;
     case 26: // problem for windows utilities (Ctrl-Z)
-      if (my_b_write(file, (const uchar *)STRING_WITH_LEN("\\z")))
-	return TRUE;
+      file += "\\z";
       break;
     case '\'': // list of string delimiter
-      if (my_b_write(file, (const uchar *)STRING_WITH_LEN("\\\'")))
-	return TRUE;
+      file += "\\\'";
       break;
     default:
-      if (my_b_write(file, (const uchar *)ptr, 1))
-	return TRUE;
+      file += ptr[0];
     }
   }
   return FALSE;
@@ -122,6 +121,7 @@ static ulonglong view_algo_from_frm(ulonglong val)
 
 /**
   Write parameter value to IO_CACHE.
+  EDG: Return as std::string instead of writing to .frm file
 
   @param file          pointer to IO_CACHE structure for writing
   @param base          pointer to data structure
@@ -135,7 +135,7 @@ static ulonglong view_algo_from_frm(ulonglong val)
 
 
 static my_bool
-write_parameter(IO_CACHE *file, const uchar* base, File_option *parameter)
+write_parameter(std::string &file, const uchar* base, File_option *parameter)
 {
   char num_buf[20];			// buffer for numeric operations
   // string for numeric operations
@@ -146,8 +146,7 @@ write_parameter(IO_CACHE *file, const uchar* base, File_option *parameter)
   case FILE_OPTIONS_STRING:
   {
     LEX_STRING *val_s= (LEX_STRING *)(base + parameter->offset);
-    if (my_b_write(file, (const uchar *)val_s->str, val_s->length))
-      DBUG_RETURN(TRUE);
+    file.append(val_s->str, val_s->length);
     break;
   }
   case FILE_OPTIONS_ESTRING:
@@ -165,8 +164,7 @@ write_parameter(IO_CACHE *file, const uchar* base, File_option *parameter)
       val= view_algo_to_frm(val);
 
     num.set(val, &my_charset_bin);
-    if (my_b_write(file, (const uchar *)num.ptr(), num.length()))
-      DBUG_RETURN(TRUE);
+    file.append(num.ptr(), num.length());
     break;
   }
   case FILE_OPTIONS_TIMESTAMP:
@@ -178,9 +176,7 @@ write_parameter(IO_CACHE *file, const uchar* base, File_option *parameter)
     get_date(val_s->str, GETDATE_DATE_TIME|GETDATE_GMT|GETDATE_FIXEDLENGTH,
 	     tm);
     val_s->length= PARSE_FILE_TIMESTAMPLENGTH;
-    if (my_b_write(file, (const uchar *)val_s->str,
-                    PARSE_FILE_TIMESTAMPLENGTH))
-      DBUG_RETURN(TRUE);
+    file.append(val_s->str, PARSE_FILE_TIMESTAMPLENGTH);
     break;
   }
   case FILE_OPTIONS_STRLIST:
@@ -192,13 +188,12 @@ write_parameter(IO_CACHE *file, const uchar* base, File_option *parameter)
     while ((str= it++))
     {
       // We need ' ' after string to detect list continuation
-      if ((!first && my_b_write(file, (const uchar *)STRING_WITH_LEN(" "))) ||
-	  my_b_write(file, (const uchar *)STRING_WITH_LEN("\'")) ||
-          write_escaped_string(file, str) ||
-	  my_b_write(file, (const uchar *)STRING_WITH_LEN("\'")))
-      {
-	DBUG_RETURN(TRUE);
+      if (!first) {
+        file += ' ';
       }
+      file += '\'';
+      write_escaped_string(file, str);
+      file += '\'';
       first= 0;
     }
     break;
@@ -213,11 +208,10 @@ write_parameter(IO_CACHE *file, const uchar* base, File_option *parameter)
     {
       num.set(*val, &my_charset_bin);
       // We need ' ' after string to detect list continuation
-      if ((!first && my_b_write(file, (const uchar *)STRING_WITH_LEN(" "))) ||
-          my_b_write(file, (const uchar *)num.ptr(), num.length()))
-      {
-        DBUG_RETURN(TRUE);
+      if (!first) {
+        file += ' ';
       }
+      file.append(num.ptr(), num.length());
       first= 0;
     }
     break;
@@ -231,6 +225,7 @@ write_parameter(IO_CACHE *file, const uchar* base, File_option *parameter)
 
 /**
   Write new .frm.
+  EDB: Store in rocksdb instead of file on disk.
 
   @param dir           directory where put .frm
   @param file_name     .frm file name
@@ -252,10 +247,7 @@ sql_create_definition_file(const LEX_CSTRING *dir,
 			   const LEX_CSTRING *type,
 			   uchar* base, File_option *parameters)
 {
-  File handler;
-  IO_CACHE file;
   char path[FN_REFLEN+1];	// +1 to put temporary file name for sure
-  size_t path_end;
   File_option *param;
   DBUG_ENTER("sql_create_definition_file");
   DBUG_PRINT("enter", ("Dir: %s, file: %s, base %p",
@@ -265,7 +257,6 @@ sql_create_definition_file(const LEX_CSTRING *dir,
   if (dir)
   {
     fn_format(path, file_name->str, dir->str, "", MY_UNPACK_FILENAME);
-    path_end= strlen(path);
   }
   else
   {
@@ -274,70 +265,25 @@ sql_create_definition_file(const LEX_CSTRING *dir,
       including dir name, file name itself, and an extension,
       and with unpack_filename() executed over it.
     */    
-    path_end= strxnmov(path, sizeof(path) - 1, file_name->str, NullS) - path;
+    strxnmov(path, sizeof(path) - 1, file_name->str, NullS);
   }
-
-  // temporary file name
-  path[path_end]='~';
-  path[path_end+1]= '\0';
-  if ((handler= mysql_file_create(key_file_fileparser,
-                                  path, CREATE_MODE, O_RDWR | O_TRUNC,
-                                  MYF(MY_WME))) < 0)
-  {
-    DBUG_RETURN(TRUE);
-  }
-
-  if (init_io_cache(&file, handler, 0, WRITE_CACHE, 0L, 0, MYF(MY_WME)))
-    goto err_w_file;
 
   // write header (file signature)
-  if (my_b_write(&file, (const uchar *)STRING_WITH_LEN("TYPE=")) ||
-      my_b_write(&file, (const uchar *)type->str, type->length) ||
-      my_b_write(&file, (const uchar *)STRING_WITH_LEN("\n")))
-    goto err_w_cache;
+  std::string frm = "TYPE=";
+  frm.append(type->str, type->length);
+  frm += '\n';
 
-  // write parameters to temporary file
+  // add parameters to frm
   for (param= parameters; param->name.str; param++)
   {
-    if (my_b_write(&file, (const uchar *)param->name.str,
-                    param->name.length) ||
-	my_b_write(&file, (const uchar *)STRING_WITH_LEN("=")) ||
-	write_parameter(&file, base, param) ||
-	my_b_write(&file, (const uchar *)STRING_WITH_LEN("\n")))
-      goto err_w_cache;
+    frm.append(param->name.str, param->name.length);
+    frm += '=';
+    write_parameter(frm, base, param);
+    frm += '\n';
   }
 
-  if (end_io_cache(&file))
-    goto err_w_file;
-
-  if (opt_sync_frm) {
-    if (mysql_file_sync(handler, MYF(MY_WME)))
-      goto err_w_file;
-  }
-
-  if (mysql_file_close(handler, MYF(MY_WME)))
-  {
-    DBUG_RETURN(TRUE);
-  }
-
-  path[path_end]='\0';
-
-  {
-    // rename temporary file
-    char path_to[FN_REFLEN];
-    memcpy(path_to, path, path_end+1);
-    path[path_end]='~';
-    if (mysql_file_rename(key_file_fileparser, path, path_to, MYF(MY_WME)))
-    {
-      DBUG_RETURN(TRUE);
-    }
-  }
-  DBUG_RETURN(FALSE);
-err_w_cache:
-  end_io_cache(&file);
-err_w_file:
-  mysql_file_close(handler, MYF(MY_WME));
-  DBUG_RETURN(TRUE);
+  const bool error = myrocks::rocksdb_frm_write(path, reinterpret_cast<const uchar*>(frm.c_str()), frm.size());
+  DBUG_RETURN(error);
 }
 
 /**
@@ -365,8 +311,20 @@ my_bool rename_in_schema_file(THD *thd,
   build_table_filename(new_path, sizeof(new_path) - 1,
                        new_db, new_name, reg_ext, 0);
 
-  if (mysql_file_rename(key_file_frm, old_path, new_path, MYF(MY_WME)))
+  // EDB: Rename in rocksdb instead of files on disk.
+  uchar *frm;
+  size_t frm_length;
+  if (myrocks::rocksdb_frm_read(old_path, &frm, &frm_length)) {
     return 1;
+  }
+  const bool error= myrocks::rocksdb_frm_write(new_path, frm, frm_length);
+  my_free(frm);
+  if (error) {
+    return 1;
+  }
+  if (myrocks::rocksdb_frm_delete(old_path)) {
+    return 1;
+  }
 
   /* check if arc_dir exists: disabled unused feature (see bug #17823). */
   build_table_filename(arc_path, sizeof(arc_path) - 1, schema, "arc", "", 0);
@@ -402,52 +360,37 @@ File_parser *
 sql_parse_prepare(const LEX_CSTRING *file_name, MEM_ROOT *mem_root,
 		  bool bad_format_errors)
 {
-  MY_STAT stat_info;
   size_t len;
-  char *buff, *end, *sign;
+  char *frm_buff, *buff, *end, *sign;
   File_parser *parser;
-  File file;
   DBUG_ENTER("sql_parse_prepare");
 
-  if (!mysql_file_stat(key_file_fileparser,
-                       file_name->str, &stat_info, MYF(MY_WME)))
+  if (myrocks::rocksdb_frm_read(file_name->str,
+                                reinterpret_cast<uchar **>(&frm_buff), &len))
   {
     DBUG_RETURN(0);
   }
 
-  if (stat_info.st_size > INT_MAX-1)
+  if (len > INT_MAX-1)
   {
     my_error(ER_FPARSER_TOO_BIG_FILE, MYF(0), file_name->str);
+    my_free(frm_buff);
     DBUG_RETURN(0);
   }
 
   if (!(parser= new(mem_root) File_parser))
   {
+    my_free(frm_buff);
     DBUG_RETURN(0);
   }
 
-  if (!(buff= (char*) alloc_root(mem_root, (size_t)(stat_info.st_size+1))))
+  if (!(buff= (char*) alloc_root(mem_root, len+1)))
   {
+    my_free(frm_buff);
     DBUG_RETURN(0);
   }
-
-  if ((file= mysql_file_open(key_file_fileparser, file_name->str,
-                             O_RDONLY | O_SHARE, MYF(MY_WME))) < 0)
-  {
-    DBUG_RETURN(0);
-  }
-  
-  if ((len= mysql_file_read(file, (uchar *)buff, (size_t)stat_info.st_size,
-                            MYF(MY_WME))) == MY_FILE_ERROR)
-  {
-    mysql_file_close(file, MYF(MY_WME));
-    DBUG_RETURN(0);
-  }
-
-  if (mysql_file_close(file, MYF(MY_WME)))
-  {
-    DBUG_RETURN(0);
-  }
+  memcpy(buff, frm_buff, len);
+  my_free(frm_buff);
 
   end= buff + len;
   *end= '\0'; // barrier for more simple parsing

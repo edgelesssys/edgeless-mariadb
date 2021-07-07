@@ -29,7 +29,7 @@ ELSE()
   ADD_EXECUTABLE(explain_filename-t explain_filename-t.cc  dummy_builtins.cc)
 ENDIF()
 
-TARGET_LINK_LIBRARIES(explain_filename-t sql mytap)
+TARGET_LINK_LIBRARIES(explain_filename-t sql mytap rocksdb_se)
 MY_ADD_TEST(explain_filename)
 
 ADD_EXECUTABLE(mf_iocache-t mf_iocache-t.cc ../../sql/mf_iocache_encr.cc)

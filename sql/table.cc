@@ -46,6 +46,9 @@
 #include "sql_show.h"
 #include "opt_trace.h"
 
+/* EDB: rocksdb header */
+#include "rocksdb/ha_rocksdb.h"
+
 /* For MySQL 5.7 virtual fields */
 #define MYSQL57_GENERATED_FIELD 128
 #define MYSQL57_GCOL_HEADER_SIZE 4
@@ -613,11 +616,11 @@ inline bool is_system_table_name(const char *name, size_t length)
 enum open_frm_error open_table_def(THD *thd, TABLE_SHARE *share, uint flags)
 {
   bool error_given= false;
-  File file;
-  uchar *buf;
-  uchar head[FRM_HEADER_SIZE];
+  File file= 0;
+  uchar *buf= nullptr;
+  uchar *head;
   char	path[FN_REFLEN];
-  size_t frmlen, read_length;
+  size_t frmlen;
   uint length;
   DBUG_ENTER("open_table_def");
   DBUG_PRINT("enter", ("table: '%s'.'%s'  path: '%s'", share->db.str,
@@ -629,17 +632,28 @@ enum open_frm_error open_table_def(THD *thd, TABLE_SHARE *share, uint flags)
                  path);
   if (flags & GTS_FORCE_DISCOVERY)
   {
-    const char *path2= share->normalized_path.str;
+    char path2[FN_REFLEN];
     DBUG_ASSERT(flags & GTS_TABLE);
     DBUG_ASSERT(flags & GTS_USE_DISCOVERY);
     /* Delete .frm and .par files */
-    mysql_file_delete_with_symlink(key_file_frm, path2, reg_ext, MYF(0));
-    mysql_file_delete_with_symlink(key_file_partition_ddl_log, path2, PAR_EXT,
-                                   MYF(0));
+    const char *fullname= fn_format(path2, share->normalized_path.str, "", reg_ext, MY_UNPACK_FILENAME | MY_APPEND_EXT);
+    if (myrocks::rocksdb_frm_delete(fullname)) {
+      goto err;
+    }
+    fullname= fn_format(path2, share->normalized_path.str, "", PAR_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
+    if (myrocks::rocksdb_frm_delete(fullname)) {
+      goto err;
+    }
     file= -1;
   }
   else
-    file= mysql_file_open(key_file_frm, path, O_RDONLY | O_SHARE, MYF(0));
+  {
+    if(myrocks::rocksdb_frm_read(path, &buf, &frmlen)) {
+      file= -1;
+    } else {
+      head = buf;
+    }
+  }
 
   if (file < 0)
   {
@@ -648,13 +662,6 @@ enum open_frm_error open_table_def(THD *thd, TABLE_SHARE *share, uint flags)
       ha_discover_table(thd, share);
       error_given= true;
     }
-    goto err_not_open;
-  }
-
-  if (mysql_file_read(file, head, sizeof(head), MYF(MY_NABP)))
-  {
-    share->error = my_errno == HA_ERR_FILE_TOO_SHORT
-                      ? OPEN_FRM_CORRUPTED : OPEN_FRM_READ_ERROR;
     goto err;
   }
 
@@ -690,26 +697,6 @@ enum open_frm_error open_table_def(THD *thd, TABLE_SHARE *share, uint flags)
     goto err;
   }
 
-  frmlen= uint4korr(head+10);
-  set_if_smaller(frmlen, FRM_MAX_SIZE); // safety
-
-  if (!(buf= (uchar*)my_malloc(PSI_INSTRUMENT_ME, frmlen,
-                               MYF(MY_THREAD_SPECIFIC|MY_WME))))
-    goto err;
-
-  memcpy(buf, head, sizeof(head));
-
-  read_length= mysql_file_read(file, buf + sizeof(head),
-                               frmlen - sizeof(head), MYF(MY_WME));
-  if (read_length == 0 || read_length == (size_t)-1)
-  {
-    share->error = OPEN_FRM_READ_ERROR;
-    my_free(buf);
-    goto err;
-  }
-  mysql_file_close(file, MYF(MY_WME));
-
-  frmlen= read_length + sizeof(head);
 
   share->init_from_binary_frm_image(thd, false, buf, frmlen);
   /*
@@ -717,14 +704,10 @@ enum open_frm_error open_table_def(THD *thd, TABLE_SHARE *share, uint flags)
     init_from_binary_frm_image would call my_error() itself.
   */
   error_given= true;
-  my_free(buf);
-
-  goto err_not_open;
 
 err:
-  mysql_file_close(file, MYF(MY_WME));
+  my_free(buf);
 
-err_not_open:
   /* Mark that table was created earlier and thus should have been logged */
   share->table_creation_was_logged= 1;
 
@@ -3445,8 +3428,7 @@ bool TABLE_SHARE::write_frm_image(const uchar *frm, size_t len)
   char file_name[FN_REFLEN+1];
   strxnmov(file_name, sizeof(file_name)-1, normalized_path.str, reg_ext,
            NullS);
-  return writefile(file_name, db.str, table_name.str, false,
-                   frm, len);
+  return myrocks::rocksdb_frm_write(file_name, frm, len);
 }
 
 bool TABLE_SHARE::write_par_image(const uchar *par, size_t len)
@@ -3454,7 +3436,7 @@ bool TABLE_SHARE::write_par_image(const uchar *par, size_t len)
   char file_name[FN_REFLEN+1];
   strxnmov(file_name, sizeof(file_name)-1, normalized_path.str, PAR_EXT,
            NullS);
-  return writefile(file_name, db.str, table_name.str, false, par, len);
+  return myrocks::rocksdb_frm_write(file_name, par, len);
 }
 
 
@@ -3474,7 +3456,7 @@ bool TABLE_SHARE::read_frm_image(const uchar **frm, size_t *len)
     frm_image= 0;
     return 0;
   }
-  return readfrm(normalized_path.str, frm, len);
+  return myrocks::rocksdb_frm_read(normalized_path.str, const_cast<uchar**>(frm), len);
 }
 
 
@@ -4733,9 +4715,16 @@ int
 rename_file_ext(const char * from,const char * to,const char * ext)
 {
   char from_b[FN_REFLEN],to_b[FN_REFLEN];
+  uchar *from_frm= nullptr;
+  size_t from_length;
   (void) strxmov(from_b,from,ext,NullS);
   (void) strxmov(to_b,to,ext,NullS);
-  return mysql_file_rename(key_file_frm, from_b, to_b, MYF(0));
+  if (myrocks::rocksdb_frm_read(from_b, &from_frm, &from_length) ||
+      myrocks::rocksdb_frm_delete(from_b))
+  {
+    return 1;
+  }
+  return myrocks::rocksdb_frm_write(to_b, from_frm, from_length);
 }
 
 

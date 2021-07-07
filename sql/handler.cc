@@ -65,6 +65,9 @@
 #include "wsrep_var.h"            /* wsrep_hton_check() */
 #endif /* WITH_WSREP */
 
+/* EDB: rocksdb header */
+#include "rocksdb/ha_rocksdb.h"
+
 /**
   @def MYSQL_TABLE_LOCK_WAIT
   Instrumentation helper for table io_waits.
@@ -5853,7 +5856,9 @@ bool ha_table_exists(THD *thd, const LEX_CSTRING *db,
                                          db->str, table_name->str, "", 0);
   st_discover_existence_args args= {path, path_len, db->str, table_name->str, 0, true};
 
-  if (file_ext_exists(path, path_len, reg_ext))
+  // EDB: Check if .frm exists in rocksdb.
+  strmake(path + path_len, reg_ext, FN_REFLEN - path_len);
+  if (myrocks::rocksdb_frm_exists(path))
   {
     bool exists= true;
     if (hton)

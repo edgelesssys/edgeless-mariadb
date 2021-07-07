@@ -38,6 +38,9 @@
 #include "opt_trace.h"
 #include "wsrep_mysqld.h"
 
+/* EDB: rocksdb header */
+#include "rocksdb/ha_rocksdb.h"
+
 #define MD5_BUFF_LENGTH 33
 
 const LEX_CSTRING view_type= { STRING_WITH_LEN("VIEW") };
@@ -1840,7 +1843,7 @@ bool mysql_drop_view(THD *thd, TABLE_LIST *views, enum_drop_mode drop_mode)
     build_table_filename(path, sizeof(path) - 1,
                          view->db.str, view->table_name.str, reg_ext, 0);
 
-    if ((not_exist= my_access(path, F_OK)) || !dd_frm_is_view(thd, path))
+    if ((not_exist= !myrocks::rocksdb_frm_exists(path)) || !dd_frm_is_view(thd, path))
     {
       char name[FN_REFLEN];
       my_snprintf(name, sizeof(name), "%s.%s", view->db.str,
@@ -1859,7 +1862,7 @@ bool mysql_drop_view(THD *thd, TABLE_LIST *views, enum_drop_mode drop_mode)
         not_exists_count++;
       continue;
     }
-    if (unlikely(mysql_file_delete(key_file_frm, path, MYF(MY_WME))))
+    if (unlikely(myrocks::rocksdb_frm_delete(path)))
       delete_error= TRUE;
 
     some_views_deleted= TRUE;

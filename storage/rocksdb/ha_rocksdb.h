@@ -1080,6 +1080,9 @@ std::vector<std::string> rocksdb_frm_discover(const char *frm_path);
  * Helper functions to handle storing/managing database meta files in rocksdb instead of the disk.
  */
 bool rocksdb_db_exists(const char *opt_path);
+bool rocksdb_db_write_opt(const char *opt_path, const char *opt, size_t len);
+bool rocksdb_db_read_opt(const char *opt_path, char **opt, size_t *len);
+bool rocksdb_db_delete(const char *opt_path);
 std::vector<std::string> rocksdb_db_discover(const char *opt_path);
 
 }  // namespace myrocks

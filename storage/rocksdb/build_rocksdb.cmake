@@ -3,7 +3,11 @@ if(POLICY CMP0042)
   cmake_policy(SET CMP0042 NEW)
 endif()
 
-SET(ROCKSDB_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rocksdb)
+if(WITH_EROCKS)
+  SET(ROCKSDB_SOURCE_DIR ${EDBDIR}/3rdparty/edgeless-rocksdb)
+else()
+  SET(ROCKSDB_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rocksdb)
+endif()
 
 INCLUDE_DIRECTORIES(
   ${CMAKE_CURRENT_BINARY_DIR}
@@ -295,7 +299,6 @@ set(ROCKSDB_SOURCES
         options/options_parser.cc
         options/options_sanity_check.cc
         port/stack_trace.cc
-        table/adaptive/adaptive_table_factory.cc
         table/block_based/block.cc
         table/block_based/block_based_filter_block.cc
         table/block_based/block_based_table_builder.cc
@@ -314,21 +317,12 @@ set(ROCKSDB_SOURCES
         table/block_based/partitioned_filter_block.cc
         table/block_based/uncompression_dict_reader.cc
         table/block_fetcher.cc
-        table/cuckoo/cuckoo_table_builder.cc
-        table/cuckoo/cuckoo_table_factory.cc
-        table/cuckoo/cuckoo_table_reader.cc
         table/format.cc
         table/get_context.cc
         table/iterator.cc
         table/merging_iterator.cc
         table/meta_blocks.cc
         table/persistent_cache_helper.cc
-        table/plain/plain_table_bloom.cc
-        table/plain/plain_table_builder.cc
-        table/plain/plain_table_factory.cc
-        table/plain/plain_table_index.cc
-        table/plain/plain_table_key_coding.cc
-        table/plain/plain_table_reader.cc
         table/sst_file_reader.cc
         table/sst_file_writer.cc
         table/table_properties.cc
@@ -417,6 +411,25 @@ set(ROCKSDB_SOURCES
         utilities/write_batch_with_index/write_batch_with_index_internal.cc
 )
 
+if(WITH_EROCKS)
+  list(APPEND ROCKSDB_SOURCES
+    file/encrypted_file.cc
+  )
+else()
+  list(APPEND ROCKSDB_SOURCES
+    table/adaptive/adaptive_table_factory.cc
+    table/cuckoo/cuckoo_table_builder.cc
+    table/cuckoo/cuckoo_table_factory.cc
+    table/cuckoo/cuckoo_table_reader.cc
+    table/plain/plain_table_bloom.cc
+    table/plain/plain_table_builder.cc
+    table/plain/plain_table_factory.cc
+    table/plain/plain_table_index.cc
+    table/plain/plain_table_key_coding.cc
+    table/plain/plain_table_reader.cc
+  )
+endif()
+
 
 if(WIN32)
   list(APPEND ROCKSDB_SOURCES
@@ -500,4 +513,15 @@ ADD_CONVENIENCE_LIBRARY(rocksdblib ${SOURCES})
 target_link_libraries(rocksdblib ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})
 IF(CMAKE_CXX_COMPILER_ID MATCHES "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   set_target_properties(rocksdblib PROPERTIES COMPILE_FLAGS "-fPIC -fno-builtin-memcmp -Wno-error")
+endif()
+
+IF(WITH_EROCKS)
+  # EDG: additional target config
+  target_compile_definitions(rocksdblib PRIVATE NO_ALTERNATIVE_TABLES)
+  set_target_properties(rocksdblib PROPERTIES CXX_STANDARD 17)
+
+  # EDG: link libedgeless
+  set(LIBEDG_NOTEST ON)
+  add_subdirectory(${ROCKSDB_SOURCE_DIR}/libedgeless libedgeless)
+  target_link_libraries(rocksdblib edgeless_o)
 endif()

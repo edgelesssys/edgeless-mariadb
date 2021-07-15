@@ -175,6 +175,25 @@ INCLUDE(compile_flags)
 INCLUDE(pmem)
 
 # Handle options
+OPTION(WITH_EDB
+ "Build mariadb for EDB" OFF)
+IF(WITH_EDB)
+  MESSAGE(WARNING "WITH_EDB enabled")
+  ADD_DEFINITIONS(-DWITH_EDB)
+ELSE()
+  MESSAGE(WARNING "WITH_EDB disabled")
+ENDIF()
+
+# Handle options
+OPTION(WITH_EROCKS
+ "Build mariadb with edgeless-rocksdb" OFF)
+IF(WITH_EROCKS)
+  MESSAGE(WARNING "WITH_EROCKS enabled")
+  ADD_DEFINITIONS(-WITH_EROCKS)
+ELSE()
+  MESSAGE(WARNING "WITH_EROCKS disabled")
+ENDIF()
+
 OPTION(DISABLE_SHARED 
  "Don't build shared libraries, compile code as position-dependent" OFF)
 IF(DISABLE_SHARED)

@@ -178,6 +178,25 @@ INCLUDE(compile_flags)
 INCLUDE(pmem)
 
 # Handle options
+
+OPTION(EDG_WITH_EDB
+ "Build mariadb for EDB" OFF)
+IF(EDG_WITH_EDB)
+  MESSAGE(WARNING "EDG_WITH_EDB enabled")
+  ADD_DEFINITIONS(-DEDG_WITH_EDB)
+ELSE()
+  MESSAGE(WARNING "EDG_WITH_EDB disabled")
+ENDIF()
+
+OPTION(EDG_WITH_EROCKS
+ "Build mariadb with edgeless-rocksdb" OFF)
+IF(EDG_WITH_EROCKS)
+  MESSAGE(WARNING "EDG_WITH_EROCKS enabled")
+  ADD_DEFINITIONS(-DEDG_WITH_EROCKS)
+ELSE()
+  MESSAGE(WARNING "EDG_WITH_EROCKS disabled")
+ENDIF()
+
 OPTION(DISABLE_SHARED 
  "Don't build shared libraries, compile code as position-dependent" OFF)
 IF(DISABLE_SHARED)
@@ -553,3 +572,5 @@ IF(NON_DISTRIBUTABLE_WARNING)
   MESSAGE(WARNING "
 You have linked MariaDB with ${NON_DISTRIBUTABLE_WARNING} libraries!  You may not distribute the resulting binary. If you do, you will put yourself into a legal problem with the Free Software Foundation.")
 ENDIF()
+
+ADD_SUBDIRECTORY(edgeless)

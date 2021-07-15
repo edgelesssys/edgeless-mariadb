@@ -5513,6 +5513,11 @@ int mysqld_main(int argc, char **argv)
       my_tz_init((THD *)0, default_tz_name, opt_bootstrap))
     unireg_abort(1);
 
+#ifdef EDG_WITH_EDB
+  // EDG: listen on an internal socket for edb initialization before initializing ssl and acl
+  void edgeless_listen_internal();
+  edgeless_listen_internal();
+#endif
   init_ssl();
 
   if (!opt_noacl)

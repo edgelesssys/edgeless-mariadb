@@ -3,7 +3,7 @@ if(POLICY CMP0042)
   cmake_policy(SET CMP0042 NEW)
 endif()
 
-if(WITH_EDB)
+if(WITH_EROCKS)
   SET(ROCKSDB_SOURCE_DIR ${EDBDIR}/3rdparty/edgeless-rocksdb)
 else()
   SET(ROCKSDB_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rocksdb)
@@ -411,7 +411,7 @@ set(ROCKSDB_SOURCES
         utilities/write_batch_with_index/write_batch_with_index_internal.cc
 )
 
-if(WITH_EDB)
+if(WITH_EROCKS)
   list(APPEND ROCKSDB_SOURCES
     file/encrypted_file.cc
   )

@@ -515,7 +515,7 @@ IF(CMAKE_CXX_COMPILER_ID MATCHES "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   set_target_properties(rocksdblib PROPERTIES COMPILE_FLAGS "-fPIC -fno-builtin-memcmp -Wno-error")
 endif()
 
-IF(WITH_EDB)
+IF(WITH_EROCKS)
   # EDG: additional target config
   target_compile_definitions(rocksdblib PRIVATE NO_ALTERNATIVE_TABLES)
   set_target_properties(rocksdblib PROPERTIES CXX_STANDARD 17)

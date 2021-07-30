@@ -1,5 +1,5 @@
 # edgeless-mariadb
-This is a modified [MariaDB](https://github.com/MariaDB/server) designed to run in an SGX enclave. It is used by [EDB](https://github.com/edgelesssys/edb).
+This is a modified [MariaDB](https://github.com/MariaDB/server) designed to run in an SGX enclave. It is used by [EdgelessDB](https://github.com/edgelesssys/edgelessdb).
 
 ## Build
 ```sh

@@ -1075,6 +1075,11 @@ bool rocksdb_frm_write(char *frm_path, const uchar *frm, size_t len);
 bool rocksdb_frm_read(const char *frm_path, uchar **frm, size_t *len);
 bool rocksdb_frm_delete(const char *frm_path);
 std::vector<std::string> rocksdb_frm_discover(const char *frm_path);
+int rocksdb_discover_table_names(handlerton *hton
+                                        __attribute__((unused)),
+                                        LEX_CSTRING *db,
+                                        MY_DIR *dir __attribute__((unused)),
+                                        handlerton::discovered_list *result);
 /*
  * EDB: Storing/managing databases in rocksdb.
  * Helper functions to handle storing/managing database meta files in rocksdb instead of the disk.
@@ -1086,4 +1091,3 @@ bool rocksdb_db_delete(const char *opt_path);
 std::vector<std::string> rocksdb_db_discover(const char *opt_path);
 
 }  // namespace myrocks
-

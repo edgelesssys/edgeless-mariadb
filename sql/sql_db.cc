@@ -54,11 +54,13 @@
 
 #define MAX_DROP_TABLE_Q_LEN      1024
 
+#if 0
 const char *del_exts[]= {".BAK", ".opt", NullS};
 static TYPELIB deletable_extensions=
 {array_elements(del_exts)-1,"del_exts", del_exts, NULL};
+#endif
 
-static bool find_db_tables_and_rm_known_files(THD *, MY_DIR *, const char *,
+static bool find_db_tables_and_rm_known_files(THD *, const char *,
                                               const char *, TABLE_LIST **);
 
 long mysql_rm_arc_files(THD *thd, MY_DIR *dirp, const char *org_path);
@@ -840,11 +842,10 @@ static bool
 mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists, bool silent)
 {
   ulong deleted_tables= 0;
-  bool error= true, rm_mysql_schema;
+  bool error= false, rm_mysql_schema;
   char	opt_path[FN_REFLEN + 16];
   char	frm_path[FN_REFLEN + 16];
   char	db_path[FN_REFLEN + 16];
-  MY_DIR *dirp;
   uint length;
   TABLE_LIST *tables= NULL;
   TABLE_LIST *table;
@@ -857,9 +858,30 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists, bool silen
   if (lock_schema_name(thd, dbnorm))
     DBUG_RETURN(true);
 
-  length= build_table_filename(opt_path, sizeof(opt_path) - 1, db->str, "", "", 0);
+
+
+  length= build_table_filename(opt_path, sizeof(opt_path) - 1, db->str, "",
+                                   "", 0);
   strmov(opt_path+length, MY_DB_OPT_FILE);		// Append db option file name
-  del_dbopt(opt_path);				// Remove dboption hash entry
+
+  /* See if the database exists */
+  if(!myrocks::rocksdb_db_exists(opt_path)) {
+    if (!if_exists)
+    {
+      my_error(ER_DB_DROP_EXISTS, MYF(0), db->str);
+      DBUG_RETURN(true);
+    }
+    else
+    {
+      push_warning_printf(thd, Sql_condition::WARN_LEVEL_NOTE,
+        ER_DB_DROP_EXISTS, ER_THD(thd, ER_DB_DROP_EXISTS),
+                          db->str);
+      error= false;
+      goto update_binlog;
+    }
+  }
+
+  del_dbopt(opt_path); // Remove dboption hash entry
   /*
      Now remove the db.opt file.
      The 'find_db_tables_and_rm_known_files' doesn't remove this file
@@ -871,34 +893,18 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists, bool silen
     my_error(EE_DELETE, MYF(0), opt_path, my_errno);
     DBUG_RETURN(true);
   }
-    
+
   build_table_filename(db_path, sizeof(db_path) - 1, db->str, "", "", 0);
-  for (const auto &tablename : myrocks::rocksdb_frm_discover(db_path)) {
-    build_table_filename(frm_path, sizeof(frm_path) - 1, db->str, tablename.c_str(), reg_ext, 0);
+  if (find_db_tables_and_rm_known_files(thd, dbnorm, db_path, &tables))
+    goto exit;
+
+  /* Delete .frm files */
+  for (const auto &tablename : myrocks::rocksdb_frm_discover(db_path))
+  {
+    build_table_filename(frm_path, sizeof(frm_path) - 1, db->str,
+                         tablename.c_str(), reg_ext, 0);
     myrocks::rocksdb_frm_delete(frm_path);
   }
-
-
-  /* See if the directory exists */
-  if (!(dirp= my_dir(db_path,MYF(MY_DONT_SORT))))
-  {
-    if (!if_exists)
-    {
-      my_error(ER_DB_DROP_EXISTS, MYF(0), db->str);
-      DBUG_RETURN(true);
-    }
-    else
-    {
-      push_warning_printf(thd, Sql_condition::WARN_LEVEL_NOTE,
-			  ER_DB_DROP_EXISTS, ER_THD(thd, ER_DB_DROP_EXISTS),
-                          db->str);
-      error= false;
-      goto update_binlog;
-    }
-  }
-
-  if (find_db_tables_and_rm_known_files(thd, dirp, dbnorm, db_path, &tables))
-    goto exit;
 
   /*
     Disable drop of enabled log tables, must be done before name locking.
@@ -966,12 +972,6 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists, bool silen
 #endif
     }
     reenable_binlog(thd);
-
-    /*
-      If the directory is a symbolic link, remove the link first, then
-      remove the directory the symbolic link pointed at
-    */
-    error= rm_dir_w_symlink(db_path, true);
   }
   thd->pop_internal_handler();
 
@@ -1078,7 +1078,6 @@ exit:
     mysql_change_db_impl(thd, NULL, NO_ACL, thd->variables.collation_server);
     thd->session_tracker.current_schema.mark_as_changed(thd);
   }
-  my_dirend(dirp);
   DBUG_RETURN(error);
 }
 
@@ -1092,21 +1091,20 @@ bool mysql_rm_db(THD *thd, const LEX_CSTRING *db, bool if_exists)
 }
 
 
-static bool find_db_tables_and_rm_known_files(THD *thd, MY_DIR *dirp,
+static bool find_db_tables_and_rm_known_files(THD *thd,
                                               const char *dbname,
                                               const char *path,
                                               TABLE_LIST **tables)
 {
-  char filePath[FN_REFLEN];
   LEX_CSTRING db= { dbname, strlen(dbname) };
   TABLE_LIST *tot_list=0, **tot_list_next_local, **tot_list_next_global;
   DBUG_ENTER("find_db_tables_and_rm_known_files");
   DBUG_PRINT("enter",("path: %s", path));
 
   /* first, get the list of tables */
-  Dynamic_array<LEX_CSTRING*> files(dirp->number_of_files);
+  Dynamic_array<LEX_CSTRING*> files(1);
   Discovered_table_list tl(thd, &files);
-  if (ha_discover_table_names(thd, &db, dirp, &tl, true))
+  if (ha_discover_table_names(thd, &db, &tl, true))
     DBUG_RETURN(1);
 
   /* Now put the tables in the list */
@@ -1146,6 +1144,7 @@ static bool find_db_tables_and_rm_known_files(THD *thd, MY_DIR *dirp,
   }
   *tables= tot_list;
 
+#if 0 /* EDG: No files are written to disk */
   /* and at last delete all non-table files */
   for (uint idx=0 ;
        idx < (uint) dirp->number_of_files && !thd->killed ;
@@ -1191,6 +1190,7 @@ static bool find_db_tables_and_rm_known_files(THD *thd, MY_DIR *dirp,
       }
     }
   }
+#endif
 
   DBUG_RETURN(false);
 }

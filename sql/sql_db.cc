@@ -972,6 +972,16 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists, bool silen
 #endif
     }
     reenable_binlog(thd);
+
+    /*
+     If the directory is a symbolic link, remove the link first, then
+     remove the directory the symbolic link pointed at
+    */
+    if (rm_dir_w_symlink(db_path, false)) {
+      push_warning_printf(thd, Sql_condition::WARN_LEVEL_NOTE,
+                          ER_DB_DROP_RMDIR, ER_THD(thd, ER_DB_DROP_RMDIR),
+                          db->str);
+    }
   }
   thd->pop_internal_handler();
 

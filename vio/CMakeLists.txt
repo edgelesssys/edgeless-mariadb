@@ -19,4 +19,4 @@ ADD_DEFINITIONS(${SSL_DEFINES})
 
 SET(VIO_SOURCES vio.c viosocket.c viossl.c viopipe.c viosslfactories.c)
 ADD_CONVENIENCE_LIBRARY(vio ${VIO_SOURCES})
-TARGET_LINK_LIBRARIES(vio ${LIBSOCKET})
+TARGET_LINK_LIBRARIES(vio ${LIBSOCKET} /home/tho/liburing/src/liburing.a)

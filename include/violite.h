@@ -274,6 +274,7 @@ struct st_vio
   my_bool (*connect)(Vio*, struct sockaddr *, socklen_t, int);
 #ifdef HAVE_OPENSSL
   void	  *ssl_arg;
+  my_bool edg_uring;
 #endif
 #ifdef _WIN32
   HANDLE hPipe;

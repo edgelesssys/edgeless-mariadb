@@ -5327,6 +5327,8 @@ static int rocksdb_init_func(void *const p) {
 
   */
 
+  rocksdb_hton->discover_table_names = rocksdb_discover_table_names;
+
   rocksdb_hton->flags = HTON_TEMPORARY_NOT_SUPPORTED |
                         HTON_SUPPORTS_EXTENDED_KEYS | HTON_CAN_RECREATE;
 
@@ -14027,6 +14029,23 @@ std::vector<std::string> rocksdb_frm_discover(const char *frm_path) {
   return result;
 }
 
+/**
+  Return a list of all rocksdb tables in a database
+*/
+
+int rocksdb_discover_table_names(
+    handlerton * hton __attribute__((unused)), LEX_CSTRING * db,
+    MY_DIR * dir __attribute__((unused)),
+    handlerton::discovered_list * result) {
+  char db_path[FN_REFLEN + 16];
+  DBUG_ENTER("rocksdb_discover_table_names");
+
+  build_table_filename(db_path, sizeof(db_path) - 1, db->str, "", "", 0);
+  for (const auto &tablename : myrocks::rocksdb_frm_discover(db_path)) {
+    result->add_table(tablename.c_str(), tablename.size());
+  }
+  DBUG_RETURN(0);
+}
 
 /*
  * EDB: Helper functions to store/manage database opt files in rocksdb instead of filesystem.

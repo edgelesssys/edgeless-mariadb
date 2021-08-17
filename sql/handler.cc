@@ -5967,6 +5967,7 @@ bool ha_check_if_updates_are_ignored(THD *thd, handlerton *hton,
 */
 extern "C" {
 
+#if 0
 static int cmp_file_names(const void *a, const void *b)
 {
   CHARSET_INFO *cs= character_set_filesystem;
@@ -5974,6 +5975,7 @@ static int cmp_file_names(const void *a, const void *b)
   char *bb= ((FILEINFO *)b)->name;
   return cs->strnncoll(aa, strlen(aa), bb, strlen(bb));
 }
+#endif
 
 static int cmp_table_names(LEX_CSTRING * const *a, LEX_CSTRING * const *b)
 {
@@ -6104,7 +6106,6 @@ static my_bool discover_names(THD *thd, plugin_ref plugin,
 
   @param thd
   @param db         database to look into
-  @param dirp       list of files in this database (as returned by my_dir())
   @param result     the object to return the list of files in
   @param reusable   if true, on return, 'dirp' will be a valid list of all
                     non-table files. If false, discovery will work much faster,
@@ -6115,7 +6116,7 @@ static my_bool discover_names(THD *thd, plugin_ref plugin,
   for DROP DATABASE (as it needs to know and delete non-table files).
 */
 
-int ha_discover_table_names(THD *thd, LEX_CSTRING *db, MY_DIR *dirp,
+int ha_discover_table_names(THD *thd, LEX_CSTRING *db,
                             Discovered_table_list *result, bool reusable)
 {
   int error;
@@ -6124,22 +6125,21 @@ int ha_discover_table_names(THD *thd, LEX_CSTRING *db, MY_DIR *dirp,
   if (engines_with_discover_file_names == 0 && !reusable)
   {
     st_discover_names_args args= {db, NULL, result, 0};
-    error= ext_table_discovery_simple(dirp, result) ||
-           plugin_foreach(thd, discover_names,
+    error= plugin_foreach(thd, discover_names,
                             MYSQL_STORAGE_ENGINE_PLUGIN, &args);
     if (args.possible_duplicates > 0)
       result->remove_duplicates();
   }
   else
   {
-    st_discover_names_args args= {db, dirp, result, 0};
+    st_discover_names_args args= {db, NULL, result, 0};
 
+#if 0
     /* extension_based_table_discovery relies on dirp being sorted */
     my_qsort(dirp->dir_entry, dirp->number_of_files,
              sizeof(FILEINFO), cmp_file_names);
-
-    error= extension_based_table_discovery(dirp, reg_ext, result) ||
-           plugin_foreach(thd, discover_names,
+#endif
+    error= plugin_foreach(thd, discover_names,
                             MYSQL_STORAGE_ENGINE_PLUGIN, &args);
     if (args.possible_duplicates > 0)
       result->remove_duplicates();

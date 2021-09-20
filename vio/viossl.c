@@ -140,6 +140,17 @@ static my_bool ssl_should_retry(Vio *vio, int ret, enum enum_vio_io_event *event
 }
 
 
+// EDG: copied from viosocket.c
+static int vio_set_linger(my_socket s, unsigned short timeout_sec)
+{
+  struct linger s_linger;
+  int ret;
+  s_linger.l_onoff = 1;
+  s_linger.l_linger = timeout_sec;
+  ret = setsockopt(s, SOL_SOCKET, SO_LINGER, (const char *)&s_linger, (int)sizeof(s_linger));
+  return ret;
+}
+
 /**
   Handle SSL io error.
 
@@ -162,6 +173,24 @@ static int handle_ssl_io_error(Vio *vio, int ret)
     return 1;
 
   /* Attempt to wait for an I/O event. */
+  if (vio->edg_async && event == VIO_IO_EVENT_READ)
+  {
+    int edgeless_ssl_wait(SSL *, int);
+    // adapted from vio_socket_io_wait in viosocket.c
+    switch (edgeless_ssl_wait(vio->ssl_arg, vio->read_timeout))
+    {
+    case -1:
+      /* Upon failure, vio_read/write() shall return -1. */
+      return -1;
+    case 0:
+      /* The wait timed out. */
+      vio_set_linger(vio->mysql_socket.fd, 0);
+      return -1;
+    default:
+      /* A positive value indicates an I/O event. */
+      return 0;
+    }
+  }
   return vio_socket_io_wait(vio, event);
 }
 
@@ -326,7 +355,21 @@ static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
   DBUG_PRINT("info", ("ssl: %p timeout: %ld", ssl, timeout));
   SSL_clear(ssl);
   SSL_SESSION_set_timeout(SSL_get_session(ssl), timeout);
-  SSL_set_fd(ssl, (int)sd);
+
+  // EDG: use async for incoming connections
+  if (func == SSL_accept)
+  {
+    int edgeless_ssl_use_async(SSL *, int);
+    const int res= edgeless_ssl_use_async(ssl, sd);
+    if (res)
+    {
+      SSL_free(ssl);
+      DBUG_RETURN(res);
+    }
+    vio->edg_async= TRUE;
+  }
+  else
+    SSL_set_fd(ssl, (int)sd);
 
 #ifdef HAVE_WOLFSSL
   /* Set first argument of the transport functions. */
@@ -355,6 +398,8 @@ static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
   {
     DBUG_RETURN(1);
   }
+  if (func == SSL_accept)
+    vio->edg_async= TRUE; // has been cleared by vio_reset
 
 #ifndef DBUG_OFF
   {

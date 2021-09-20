@@ -1,4 +1,5 @@
 target_sources(misc PRIVATE ${CMAKE_CURRENT_LIST_DIR}/libmariadb_skip_tests.c)
+target_sources(vio PRIVATE ${CMAKE_CURRENT_LIST_DIR}/vio_async.cc)
 
 if(EDG_WITH_EDB)
   target_sources(sql PRIVATE ${EDG_EDBDIR}/src/mysqld_edb.cc)

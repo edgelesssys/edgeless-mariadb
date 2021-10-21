@@ -414,6 +414,7 @@ set(ROCKSDB_SOURCES
 if(EDG_WITH_EROCKS)
   list(APPEND ROCKSDB_SOURCES
     file/encrypted_file.cc
+    file/encrypted_file_util.cc
   )
 else()
   list(APPEND ROCKSDB_SOURCES

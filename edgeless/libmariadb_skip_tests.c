@@ -48,6 +48,10 @@ __attribute__((constructor)) static void skip_tests(void)
       t->skipmsg= "EDG: needs InnoDB";
     else if (strcmp(t->name, "test_connection_timeout2") == 0)
       t->skipmsg= "EDG: needs unencrypted connection";
+    else if (strcmp(t->name, "test_mysql_insert_id") == 0 ||
+             strcmp(t->name, "test_sess_track_db") == 0)
+      t->skipmsg=
+          "EDG: fails due to changing default charset from latin1 to utf8mb4";
 #endif
   }
 }

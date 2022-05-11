@@ -1,6 +1,5 @@
 /* Copyright (c) 2000, 2016, Oracle and/or its affiliates.
    Copyright (c) 2009, 2021, MariaDB Corporation.
-   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -65,9 +64,6 @@
 #include "wsrep_trans_observer.h" /* wsrep transaction hooks */
 #include "wsrep_var.h"            /* wsrep_hton_check() */
 #endif /* WITH_WSREP */
-
-/* EDB: rocksdb header */
-#include "rocksdb/ha_rocksdb.h"
 
 /**
   @def MYSQL_TABLE_LOCK_WAIT
@@ -5857,9 +5853,7 @@ bool ha_table_exists(THD *thd, const LEX_CSTRING *db,
                                          db->str, table_name->str, "", 0);
   st_discover_existence_args args= {path, path_len, db->str, table_name->str, 0, true};
 
-  // EDB: Check if .frm exists in rocksdb.
-  strmake(path + path_len, reg_ext, FN_REFLEN - path_len);
-  if (myrocks::rocksdb_frm_exists(path))
+  if (file_ext_exists(path, path_len, reg_ext))
   {
     bool exists= true;
     if (hton)
@@ -5967,7 +5961,6 @@ bool ha_check_if_updates_are_ignored(THD *thd, handlerton *hton,
 */
 extern "C" {
 
-#if 0
 static int cmp_file_names(const void *a, const void *b)
 {
   CHARSET_INFO *cs= character_set_filesystem;
@@ -5975,7 +5968,6 @@ static int cmp_file_names(const void *a, const void *b)
   char *bb= ((FILEINFO *)b)->name;
   return cs->strnncoll(aa, strlen(aa), bb, strlen(bb));
 }
-#endif
 
 static int cmp_table_names(LEX_CSTRING * const *a, LEX_CSTRING * const *b)
 {
@@ -6106,6 +6098,7 @@ static my_bool discover_names(THD *thd, plugin_ref plugin,
 
   @param thd
   @param db         database to look into
+  @param dirp       list of files in this database (as returned by my_dir())
   @param result     the object to return the list of files in
   @param reusable   if true, on return, 'dirp' will be a valid list of all
                     non-table files. If false, discovery will work much faster,
@@ -6116,7 +6109,7 @@ static my_bool discover_names(THD *thd, plugin_ref plugin,
   for DROP DATABASE (as it needs to know and delete non-table files).
 */
 
-int ha_discover_table_names(THD *thd, LEX_CSTRING *db,
+int ha_discover_table_names(THD *thd, LEX_CSTRING *db, MY_DIR *dirp,
                             Discovered_table_list *result, bool reusable)
 {
   int error;
@@ -6125,21 +6118,22 @@ int ha_discover_table_names(THD *thd, LEX_CSTRING *db,
   if (engines_with_discover_file_names == 0 && !reusable)
   {
     st_discover_names_args args= {db, NULL, result, 0};
-    error= plugin_foreach(thd, discover_names,
+    error= ext_table_discovery_simple(dirp, result) ||
+           plugin_foreach(thd, discover_names,
                             MYSQL_STORAGE_ENGINE_PLUGIN, &args);
     if (args.possible_duplicates > 0)
       result->remove_duplicates();
   }
   else
   {
-    st_discover_names_args args= {db, NULL, result, 0};
+    st_discover_names_args args= {db, dirp, result, 0};
 
-#if 0
     /* extension_based_table_discovery relies on dirp being sorted */
     my_qsort(dirp->dir_entry, dirp->number_of_files,
              sizeof(FILEINFO), cmp_file_names);
-#endif
-    error= plugin_foreach(thd, discover_names,
+
+    error= extension_based_table_discovery(dirp, reg_ext, result) ||
+           plugin_foreach(thd, discover_names,
                             MYSQL_STORAGE_ENGINE_PLUGIN, &args);
     if (args.possible_duplicates > 0)
       result->remove_duplicates();

@@ -14,7 +14,7 @@ Some tests require a running mariadbd:
 ```sh
 cd build
 scripts/mysql_install_db --srcdir=.. --auth-root-authentication-method=normal --no-defaults
-sql/mariadbd --datadir=./data
+sql/mariadbd --no-defaults --datadir=./data
 ```
 
 Then just run ctest:

@@ -1,6 +1,7 @@
 /*
    Copyright (c) 2000, 2014, Oracle and/or its affiliates.
    Copyright (c) 2009, 2016, MariaDB Corporation
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -892,7 +893,9 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists, bool silen
   path[length]= '\0';				// Remove file name
 
   /* See if the directory exists */
-  if (!(dirp= my_dir(path,MYF(MY_DONT_SORT))))
+  MY_DIR *edgeless_my_dir(const char *path, myf MyFlags);
+  void edgeless_my_dirend(MY_DIR *buffer);
+  if (!(dirp= edgeless_my_dir(path,MYF(MY_DONT_SORT))))
   {
     if (!if_exists)
     {
@@ -984,6 +987,7 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists, bool silen
       remove the directory the symbolic link pointed at
     */
     error= rm_dir_w_symlink(path, true);
+    error= false; // EDG: May or may not exist in memfs. Thus, ignore error.
   }
   thd->pop_internal_handler();
 
@@ -1090,7 +1094,7 @@ exit:
     mysql_change_db_impl(thd, NULL, NO_ACL, thd->variables.collation_server);
     thd->session_tracker.current_schema.mark_as_changed(thd);
   }
-  my_dirend(dirp);
+  edgeless_my_dirend(dirp);
   DBUG_RETURN(error);
 }
 

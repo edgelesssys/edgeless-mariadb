@@ -14601,6 +14601,11 @@ void sql_print_verbose_info(const char *format, ...)
   }
 }
 
+rocksdb::ColumnFamilyHandle *edgeless_get_column_family(
+    const std::string &name) {
+  return myrocks::cf_manager.get_or_create_cf(myrocks::rdb, name);
+}
+
 }  // namespace myrocks
 
 

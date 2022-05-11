@@ -37,12 +37,9 @@ __attribute__((constructor)) static void skip_tests(void)
   extern struct my_tests_st my_tests[];
   for (struct my_tests_st *t= my_tests; t->name; ++t)
   {
-    if (strcmp(t->name, "test_frm_bug") == 0)
-      t->skipmsg= "EDG: needs frm files on disk";
-#if EDG_WITH_EDB
-    else if (strcmp(t->name, "test_bug1500") == 0 ||
-             strcmp(t->name, "test_conc68") == 0 ||
-             strcmp(t->name, "test_conc70") == 0)
+    if (strcmp(t->name, "test_bug1500") == 0 ||
+        strcmp(t->name, "test_conc68") == 0 ||
+        strcmp(t->name, "test_conc70") == 0)
       t->skipmsg= "EDG: needs MyISAM";
     else if (strcmp(t->name, "test_conc496") == 0)
       t->skipmsg= "EDG: needs InnoDB";
@@ -52,6 +49,5 @@ __attribute__((constructor)) static void skip_tests(void)
              strcmp(t->name, "test_sess_track_db") == 0)
       t->skipmsg=
           "EDG: fails due to changing default charset from latin1 to utf8mb4";
-#endif
   }
 }

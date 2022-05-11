@@ -1,5 +1,3 @@
-target_sources(misc PRIVATE ${CMAKE_CURRENT_LIST_DIR}/libmariadb_skip_tests.c)
-
 if(EDG_WITH_EDB)
   target_sources(sql PRIVATE ${EDG_EDBDIR}/src/mysqld_edb.cc)
   target_sources(basic-t PRIVATE ${CMAKE_CURRENT_LIST_DIR}/libmariadb_skip_tests.c)

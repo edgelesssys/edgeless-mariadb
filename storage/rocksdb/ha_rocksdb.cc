@@ -12460,7 +12460,9 @@ my_core::enum_alter_inplace_result ha_rocksdb::check_if_supported_inplace_alter(
 
   /* FIXME: MDEV-16099 Use alter algorithm=nocopy or algorithm=instant
 		for non-InnoDB engine */
-  DBUG_RETURN(my_core::HA_ALTER_INPLACE_COPY_LOCK);
+  DBUG_RETURN(my_core::HA_ALTER_INPLACE_NOT_SUPPORTED);
+  // EDG: changed to NOT_SUPPORTED because it requires
+  // IngestExternalFiles, which edgeless-rocksdb doesn't support
 }
 
 /**

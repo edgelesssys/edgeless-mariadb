@@ -1,5 +1,6 @@
 /* Copyright (c) 2000, 2013, Oracle and/or its affiliates
    Copyright (c) 2012, 2014, SkySQL Ab
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -118,6 +119,11 @@ void init_thr_alarm(uint max_alarms)
   pthread_sigmask(SIG_UNBLOCK, &s, NULL);
 #endif
   DBUG_VOID_RETURN;
+}
+
+void edgeless_init_thr_alarm(void)
+{
+  mysql_mutex_init(key_LOCK_alarm, &LOCK_alarm, MY_MUTEX_INIT_FAST);
 }
 
 

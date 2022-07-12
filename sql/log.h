@@ -1,5 +1,6 @@
 /* Copyright (c) 2005, 2016, Oracle and/or its affiliates.
    Copyright (c) 2009, 2020, MariaDB Corporation.
+   Copyright (c) 2022, Intel Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -1249,7 +1250,12 @@ static inline TC_LOG *get_tc_log_implementation()
     return &tc_log_dummy;
   if (opt_bin_log)
     return &mysql_bin_log;
+#ifdef NO_EDB_MODE
+//mmap does not work with enclave
   return &tc_log_mmap;
+#else
+  return &tc_log_dummy;
+#endif
 }
 
 #ifdef WITH_WSREP

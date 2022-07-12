@@ -2,6 +2,7 @@
 
 Copyright (c) 1995, 2021, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2014, 2022, MariaDB Corporation.
+Copyright (c) 2022, Intel Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -1258,16 +1259,21 @@ void fil_system_t::create(ulint hash_size)
 			    || dev_minor != unsigned(dev_minor)) {
 				continue;
 			}
+#ifdef NO_EDB_MODE
+			//makedev not available in enclave
 			ssd.push_back(makedev(unsigned(dev_major),
 					      unsigned(dev_minor)));
+#endif
 		}
 		closedir(d);
 	}
 	/* fil_system_t::is_ssd() assumes the following */
+#ifdef NO_EDB_MODE
 	ut_ad(makedev(0, 8) == 8);
 	ut_ad(makedev(0, 4) == 4);
 	ut_ad(makedev(0, 2) == 2);
 	ut_ad(makedev(0, 1) == 1);
+#endif
 #endif
 }
 

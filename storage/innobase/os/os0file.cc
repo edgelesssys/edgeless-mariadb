@@ -3,6 +3,7 @@
 Copyright (c) 1995, 2019, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2009, Percona Inc.
 Copyright (c) 2013, 2022, MariaDB Corporation.
+Copyright (c) 2022, Intel Corporation.
 
 Portions of this file contain modifications contributed and copyrighted
 by Percona Inc.. Those modifications are
@@ -3100,6 +3101,8 @@ os_file_set_nocache(
 			" continuing anyway.";
 	}
 #elif defined(O_DIRECT)
+#ifdef NO_EDB_MODE
+        //O_DIRECT does not work with enclave
 	if (fcntl(fd, F_SETFL, O_DIRECT) == -1) {
 		int		errno_save = errno;
 		static bool	warning_message_printed = false;
@@ -3118,6 +3121,7 @@ os_file_set_nocache(
 				<< ", continuing anyway.";
 		}
 	}
+#endif
 #endif /* defined(UNIV_SOLARIS) && defined(DIRECTIO_ON) */
 }
 
@@ -3199,7 +3203,10 @@ fallback:
 		return(success);
 	}
 
+#ifdef NO_EDB_MODE
+	//FALLOCATE does not work in enclave
 # ifdef HAVE_POSIX_FALLOCATE
+
 	int err;
 	do {
 		if (fstat(file, &statbuf)) {
@@ -3234,6 +3241,7 @@ fallback:
 		break;
 	}
 # endif /* HAVE_POSIX_ALLOCATE */
+#endif
 #endif /* _WIN32*/
 
 #ifdef _WIN32

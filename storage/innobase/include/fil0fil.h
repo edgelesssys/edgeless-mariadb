@@ -2,6 +2,7 @@
 
 Copyright (c) 1995, 2017, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2013, 2022, MariaDB Corporation.
+Copyright (c) 2022, Intel Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -1466,10 +1467,15 @@ public:
     /* Linux seems to allow up to 15 partitions per block device.
     If the detected ssd carries "partition number 0" (it is the whole device),
     compare the candidate file system number without the partition number. */
+#ifdef NO_EDB_MODE
     for (const auto s : ssd)
       if (dev == s || (dev & ~15U) == s)
         return true;
     return false;
+#else
+    //For enclave we assume that we use SSD
+    return true;
+#endif
   }
 #endif
 public:

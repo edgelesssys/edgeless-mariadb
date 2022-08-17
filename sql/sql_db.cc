@@ -1,6 +1,7 @@
 /*
    Copyright (c) 2000, 2014, Oracle and/or its affiliates.
    Copyright (c) 2009, 2016, MariaDB Corporation
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -1060,7 +1061,9 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists,
   path_length= build_table_filename(path, sizeof(path) - 1, db->str, "", "", 0);
 
   /* See if the directory exists */
-  if (!(dirp= my_dir(path,MYF(MY_DONT_SORT))))
+  MY_DIR *edgeless_my_dir(const char *path, myf MyFlags);
+  void edgeless_my_dirend(MY_DIR *buffer);
+  if (!(dirp= edgeless_my_dir(path,MYF(MY_DONT_SORT))))
   {
     if (!if_exists)
     {
@@ -1157,6 +1160,7 @@ mysql_rm_db_internal(THD *thd, const LEX_CSTRING *db, bool if_exists,
     */
     debug_crash_here("ddl_log_drop_before_drop_dir");
     error= rm_dir_w_symlink(path, true);
+    error= false; // EDG: May or may not exist in memfs. Thus, ignore error.
     debug_crash_here("ddl_log_drop_after_drop_dir");
   }
 
@@ -1294,7 +1298,7 @@ exit:
     thd->session_tracker.current_schema.mark_as_changed(thd);
   }
 end:
-  my_dirend(dirp);
+  edgeless_my_dirend(dirp);
   DBUG_RETURN(error);
 }
 

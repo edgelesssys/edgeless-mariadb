@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2012, Monty Program Ab
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -1929,6 +1930,11 @@ static MYSQL_SYSVAR_STR(datadir, rocksdb_datadir,
                         "RocksDB data directory", nullptr, nullptr,
                         "./#rocksdb");
 
+static char *rocksdb_db_log_dir;
+static MYSQL_SYSVAR_STR(db_log_dir, rocksdb_db_log_dir,
+                        PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY, nullptr,
+                        nullptr, nullptr, "");
+
 static MYSQL_SYSVAR_STR(supported_compression_types,
   compression_types_val,
   PLUGIN_VAR_NOCMDOPT | PLUGIN_VAR_READONLY,
@@ -2137,6 +2143,7 @@ static struct st_mysql_sys_var *rocksdb_system_variables[] = {
     MYSQL_SYSVAR(print_snapshot_conflict_queries),
 
     MYSQL_SYSVAR(datadir),
+    MYSQL_SYSVAR(db_log_dir),
   MYSQL_SYSVAR(supported_compression_types),
     MYSQL_SYSVAR(create_checkpoint),
     MYSQL_SYSVAR(remove_mariabackup_checkpoint),
@@ -5238,6 +5245,8 @@ static int rocksdb_check_version(handlerton *hton,
 static int rocksdb_init_func(void *const p) {
 
   DBUG_ENTER_FUNC();
+
+  rocksdb_db_options->db_log_dir = rocksdb_db_log_dir;
 
   if (prevent_myrocks_loading)
   {
@@ -12527,7 +12536,9 @@ my_core::enum_alter_inplace_result ha_rocksdb::check_if_supported_inplace_alter(
 
   /* FIXME: MDEV-16099 Use alter algorithm=nocopy or algorithm=instant
 		for non-InnoDB engine */
-  DBUG_RETURN(my_core::HA_ALTER_INPLACE_COPY_LOCK);
+  DBUG_RETURN(my_core::HA_ALTER_INPLACE_NOT_SUPPORTED);
+  // EDG: changed to NOT_SUPPORTED because it requires
+  // IngestExternalFiles, which edgeless-rocksdb doesn't support
 }
 
 /**
@@ -14742,6 +14753,11 @@ void sql_print_verbose_info(const char *format, ...)
     sql_print_information_v(format, args);
     va_end(args);
   }
+}
+
+rocksdb::ColumnFamilyHandle *edgeless_get_column_family(
+    const std::string &name) {
+  return myrocks::cf_manager.get_or_create_cf(myrocks::rdb, name);
 }
 
 }  // namespace myrocks

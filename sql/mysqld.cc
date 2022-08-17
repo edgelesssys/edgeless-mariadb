@@ -1,5 +1,6 @@
 /* Copyright (c) 2000, 2015, Oracle and/or its affiliates.
    Copyright (c) 2008, 2022, MariaDB
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -2422,7 +2423,9 @@ static void use_systemd_activated_sockets()
           struct sockaddr_storage storage;
           struct sockaddr_in in;
           struct sockaddr_in6 in6;
+#ifdef HAVE_SYS_UN_H
           struct sockaddr_un un;
+#endif
     } addr;
     SOCKET_SIZE_TYPE addrlen= sizeof(addr);
     char hbuf[NI_MAXHOST], sbuf[NI_MAXSERV];
@@ -2501,11 +2504,13 @@ static void use_systemd_activated_sockets()
       /*
         Handle abstract sockets and present them in @ form.
       */
+#ifdef HAVE_SYS_UN_H
       if (addr.un.sun_path[0] == '\0')
         addr.un.sun_path[0] = '@';
       sql_print_information("Using systemd activated unix socket %s%s",
                             addr.un.sun_path, sock.is_extra_port ? " (extra)" : "");
       memset(addr.un.sun_path, 0, sizeof(addr.un.sun_path));
+#endif
     }
     else
     {
@@ -5467,6 +5472,9 @@ static void test_lc_time_sz()
 #endif//DBUG_OFF
 
 
+extern "C" void edgeless_init_thr_alarm();
+__attribute__((weak)) void edgeless_listen_internal() {}
+
 int mysqld_main(int argc, char **argv)
 {
 #ifndef _WIN32
@@ -5708,7 +5716,6 @@ int mysqld_main(int argc, char **argv)
   if (init_server_components())
     unireg_abort(1);
 
-  init_ssl();
   network_init();
 
 #ifdef WITH_WSREP
@@ -5728,14 +5735,28 @@ int mysqld_main(int argc, char **argv)
     init signals & alarm
     After this we can't quit by a simple unireg_abort
   */
-  start_signal_handler();				// Creates pidfile
+  (void) start_signal_handler; // EDG: signals not supported
+  edgeless_init_thr_alarm();
 
-  if (mysql_rm_tmp_tables() || acl_init(opt_noacl) ||
+  if (mysql_rm_tmp_tables() || acl_init(true) ||
       my_tz_init((THD *)0, default_tz_name, opt_bootstrap))
     unireg_abort(1);
 
+  // EDG: listen on an internal socket for edb initialization before
+  // initializing ssl and acl
+  edgeless_listen_internal();
+  init_ssl();
+
   if (!opt_noacl)
+  {
+    // EDG: do what acl_init(false) would have done
+    THD thd(0);
+    thd.thread_stack= reinterpret_cast<char *>(&thd);
+    thd.store_globals();
+    acl_reload(&thd);
+
     (void) grant_init();
+  }
 
   udf_init();
 
@@ -5789,6 +5810,11 @@ int mysqld_main(int argc, char **argv)
   if (opt_bootstrap)
   {
     select_thread_in_use= 0;                    // Allow 'kill' to work
+
+    // EDG: bootstrap from file instead of stdin
+    if (opt_init_file)
+      return read_init_file(opt_init_file) ? EXIT_FAILURE : EXIT_SUCCESS;
+
     int bootstrap_error= bootstrap(mysql_stdin);
     if (!abort_loop)
       unireg_abort(bootstrap_error);

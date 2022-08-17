@@ -1,6 +1,7 @@
 /*
    Copyright (c) 2012,2013 Monty Program Ab
    Copyright (c) 2020, MariaDB Corporation.
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -52,6 +53,9 @@
 #include "./rdb_cf_manager.h"
 #include "./rdb_psi.h"
 #include "./rdb_utils.h"
+
+MY_DIR *edgeless_my_dir(const char *path, myf MyFlags);
+void edgeless_my_dirend(MY_DIR *buffer);
 
 namespace myrocks {
 
@@ -3840,7 +3844,7 @@ bool Rdb_validate_tbls::scan_for_frms(const std::string &datadir,
                                       bool *has_errors) {
   bool result = true;
   std::string fullpath = datadir + dbname;
-  struct st_my_dir *dir_info = my_dir(fullpath.c_str(), MYF(MY_DONT_SORT));
+  struct st_my_dir *dir_info = edgeless_my_dir(fullpath.c_str(), MYF(MY_DONT_SORT));
 
   /* Access the directory */
   if (dir_info == nullptr) {
@@ -3874,7 +3878,7 @@ bool Rdb_validate_tbls::scan_for_frms(const std::string &datadir,
   }
 
   /* Release the directory entry */
-  my_dirend(dir_info);
+  edgeless_my_dirend(dir_info);
 
   return result;
 }
@@ -3889,7 +3893,7 @@ bool Rdb_validate_tbls::compare_to_actual_tables(const std::string &datadir,
   struct st_my_dir *dir_info;
   struct fileinfo *file_info;
 
-  dir_info = my_dir(datadir.c_str(), MYF(MY_DONT_SORT | MY_WANT_STAT));
+  dir_info = edgeless_my_dir(datadir.c_str(), MYF(MY_DONT_SORT | MY_WANT_STAT));
   if (dir_info == nullptr) {
     // NO_LINT_DEBUG
     sql_print_warning("RocksDB: could not open datadir: %s", datadir.c_str());
@@ -3912,7 +3916,7 @@ bool Rdb_validate_tbls::compare_to_actual_tables(const std::string &datadir,
   }
 
   /* Release the directory info */
-  my_dirend(dir_info);
+  edgeless_my_dirend(dir_info);
 
   return result;
 }

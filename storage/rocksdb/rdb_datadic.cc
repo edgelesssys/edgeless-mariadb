@@ -3821,7 +3821,10 @@ bool Rdb_validate_tbls::check_frm_file(const std::string &fullpath,
             "A .frm file exists for table %s.%s, "
             "but that table is not registered in RocksDB",
             dbname.c_str(), tablename.c_str());
-        *has_errors = true;
+        // EDG: Remove .frm file instead of failing because the user can't
+        // remove it manually. (.frm files are redirected to RocksDB in EDB.)
+        if (unlink(fullfilename.c_ptr()) != 0)
+          *has_errors = true;
       }
     } else if (!strncmp(eng_type_str.str, "partition", eng_type_str.length)) {
       /*

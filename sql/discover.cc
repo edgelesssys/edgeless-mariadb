@@ -1,5 +1,6 @@
 /* Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
    Copyright (c) 2009, 2022, MariaDB Corporation.
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -140,8 +141,7 @@ int writefile(const char *path, const char *db, const char *table,
     error= (int)mysql_file_write(file, data, len, MYF(MY_WME | MY_NABP));
 
     if (!error && !tmp_table && opt_sync_frm)
-        error= mysql_file_sync(file, MYF(MY_WME)) ||
-             my_sync_dir_by_file(path, MYF(MY_WME));
+        error= mysql_file_sync(file, MYF(MY_WME));
 
     error|= mysql_file_close(file, MYF(MY_WME));
     if (error)

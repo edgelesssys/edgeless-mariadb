@@ -1,5 +1,6 @@
 /* Copyright (c) 2000, 2015, Oracle and/or its affiliates.
    Copyright (c) 2009, 2022, MariaDB
+   Copyright (c) 2021, Edgeless Systems GmbH
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -914,6 +915,16 @@ enum find_files_result {
   FIND_FILES_DIR
 };
 
+__attribute__((weak)) MY_DIR *edgeless_my_dir(const char *path, myf MyFlags)
+{
+  return my_dir(path, MyFlags);
+}
+
+__attribute__((weak)) void edgeless_my_dirend(MY_DIR *buffer)
+{
+  my_dirend(buffer);
+}
+
 /*
   find_files() - find files in a given directory.
 
@@ -941,7 +952,7 @@ find_files(THD *thd, Dynamic_array<LEX_CSTRING*> *files, LEX_CSTRING *db,
   Discovered_table_list tl(thd, files, wild);
   DBUG_ENTER("find_files");
 
-  if (!(dirp = my_dir(path, MY_THREAD_SPECIFIC | (db ? 0 : MY_WANT_STAT))))
+  if (!(dirp = edgeless_my_dir(path, MY_THREAD_SPECIFIC | (db ? 0 : MY_WANT_STAT))))
   {
     if (my_errno == ENOENT)
       my_error(ER_BAD_DB_ERROR, MYF(0), db->str);
@@ -1001,12 +1012,12 @@ find_files(THD *thd, Dynamic_array<LEX_CSTRING*> *files, LEX_CSTRING *db,
 #endif
 
   DBUG_PRINT("info",("found: %zu files", files->elements()));
-  my_dirend(dirp);
+  edgeless_my_dirend(dirp);
 
   DBUG_RETURN(FIND_FILES_OK);
 
 err:
-  my_dirend(dirp);
+  edgeless_my_dirend(dirp);
   DBUG_RETURN(FIND_FILES_OOM);
 }
 
